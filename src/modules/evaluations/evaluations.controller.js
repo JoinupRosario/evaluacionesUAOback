@@ -31,6 +31,30 @@ const generateEvaluationAccessTokens = async (evaluationMongo, studentsEmails, b
     const med_enc_id_monitor = evaluationMongo.med_enc_id_monitor;
     const med_enc_id_teacher = evaluationMongo.med_enc_id_teacher;
     const med_enc_id_coord = evaluationMongo.med_enc_id_coord;
+    const type_survey = evaluationMongo.type_survey;
+
+    // Verificar si el Survey existe en MongoDB antes de generar tokens
+    let surveyExists = false;
+    if (type_survey) {
+      try {
+        // Buscar el Survey por survey_id_mysql (que corresponde al type_survey de MySQL)
+        const survey = await Survey.findOne({ survey_id_mysql: type_survey });
+        if (survey) {
+          surveyExists = true;
+          console.log(`✅ Survey encontrado en MongoDB (survey_id_mysql: ${type_survey}), se generarán tokens`);
+        } else {
+          console.warn(`⚠️  Survey no encontrado en MongoDB (survey_id_mysql: ${type_survey}), NO se generarán tokens`);
+        }
+      } catch (error) {
+        console.error('Error al verificar existencia del Survey:', error);
+      }
+    }
+
+    // Si el Survey no existe en MongoDB, no generar tokens
+    if (!surveyExists) {
+      console.warn('⚠️  No se generarán tokens porque el Survey no existe en MongoDB');
+      return 0;
+    }
 
     // URL base del frontend (debería venir de una variable de entorno)
     const frontendBaseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
