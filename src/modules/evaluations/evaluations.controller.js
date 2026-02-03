@@ -2826,7 +2826,8 @@ export const getEvaluationMongoDetails = async (req, res) => {
         link: token.link,
         usado: token.usado,
         fecha_uso: token.fecha_uso,
-        expira_en: token.expira_en
+        expira_en: token.expira_en,
+        should_send: token.should_send !== undefined ? token.should_send : true // Por defecto true si no está definido
       };
 
       if (token.actor_type === 'student') {
@@ -2842,14 +2843,15 @@ export const getEvaluationMongoDetails = async (req, res) => {
       }
     });
 
-    // Enriquecer correos con sus links
+    // Enriquecer correos con sus links y estado should_send
     const studentEmailsWithLinks = (evaluationMongo.student_emails || []).map(item => ({
       ...item.toObject ? item.toObject() : item,
       link: studentLinksMap.get(item.legalization_id)?.link || null,
       token: studentLinksMap.get(item.legalization_id)?.token || null,
       usado: studentLinksMap.get(item.legalization_id)?.usado || false,
       fecha_uso: studentLinksMap.get(item.legalization_id)?.fecha_uso || null,
-      expira_en: studentLinksMap.get(item.legalization_id)?.expira_en || null
+      expira_en: studentLinksMap.get(item.legalization_id)?.expira_en || null,
+      should_send: studentLinksMap.get(item.legalization_id)?.should_send !== undefined ? studentLinksMap.get(item.legalization_id).should_send : true
     }));
 
     const bossEmailsWithLinks = (evaluationMongo.boss_emails || []).map(item => ({
@@ -2858,7 +2860,8 @@ export const getEvaluationMongoDetails = async (req, res) => {
       token: bossLinksMap.get(item.legalization_id)?.token || null,
       usado: bossLinksMap.get(item.legalization_id)?.usado || false,
       fecha_uso: bossLinksMap.get(item.legalization_id)?.fecha_uso || null,
-      expira_en: bossLinksMap.get(item.legalization_id)?.expira_en || null
+      expira_en: bossLinksMap.get(item.legalization_id)?.expira_en || null,
+      should_send: bossLinksMap.get(item.legalization_id)?.should_send !== undefined ? bossLinksMap.get(item.legalization_id).should_send : true
     }));
 
     const monitorEmailsWithLinks = (evaluationMongo.monitor_emails || []).map(item => ({
@@ -2867,7 +2870,8 @@ export const getEvaluationMongoDetails = async (req, res) => {
       token: monitorLinksMap.get(item.legalization_id)?.token || null,
       usado: monitorLinksMap.get(item.legalization_id)?.usado || false,
       fecha_uso: monitorLinksMap.get(item.legalization_id)?.fecha_uso || null,
-      expira_en: monitorLinksMap.get(item.legalization_id)?.expira_en || null
+      expira_en: monitorLinksMap.get(item.legalization_id)?.expira_en || null,
+      should_send: monitorLinksMap.get(item.legalization_id)?.should_send !== undefined ? monitorLinksMap.get(item.legalization_id).should_send : true
     }));
 
     const teacherEmailsWithLinks = (evaluationMongo.teacher_emails || []).map(item => ({
@@ -2876,7 +2880,8 @@ export const getEvaluationMongoDetails = async (req, res) => {
       token: teacherLinksMap.get(item.legalization_id)?.token || null,
       usado: teacherLinksMap.get(item.legalization_id)?.usado || false,
       fecha_uso: teacherLinksMap.get(item.legalization_id)?.fecha_uso || null,
-      expira_en: teacherLinksMap.get(item.legalization_id)?.expira_en || null
+      expira_en: teacherLinksMap.get(item.legalization_id)?.expira_en || null,
+      should_send: teacherLinksMap.get(item.legalization_id)?.should_send !== undefined ? teacherLinksMap.get(item.legalization_id).should_send : true
     }));
 
     const coordinatorEmailsWithLinks = (evaluationMongo.coordinator_emails || []).map(item => ({
@@ -2885,7 +2890,8 @@ export const getEvaluationMongoDetails = async (req, res) => {
       token: coordinatorLinksMap.get(item.legalization_id)?.token || null,
       usado: coordinatorLinksMap.get(item.legalization_id)?.usado || false,
       fecha_uso: coordinatorLinksMap.get(item.legalization_id)?.fecha_uso || null,
-      expira_en: coordinatorLinksMap.get(item.legalization_id)?.expira_en || null
+      expira_en: coordinatorLinksMap.get(item.legalization_id)?.expira_en || null,
+      should_send: coordinatorLinksMap.get(item.legalization_id)?.should_send !== undefined ? coordinatorLinksMap.get(item.legalization_id).should_send : true
     }));
 
     // Convertir a objeto plano y formatear fechas
@@ -2936,6 +2942,61 @@ export const getEvaluationMongoDetails = async (req, res) => {
   } catch (error) {
     console.error('Error al obtener detalles de MongoDB:', error);
     res.status(500).json({ error: 'Error al obtener detalles de MongoDB', details: error.message });
+  }
+};
+
+/**
+ * Actualiza el estado should_send de uno o varios tokens de acceso
+ * Permite marcar/desmarcar actores para envío de correos
+ */
+export const updateTokenShouldSend = async (req, res) => {
+  try {
+    const { id } = req.params; // evaluation_id_mysql
+    const { tokens } = req.body; // Array de { legalization_id, actor_type, should_send }
+
+    if (!tokens || !Array.isArray(tokens)) {
+      return res.status(400).json({ error: 'Se requiere un array de tokens' });
+    }
+
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'MongoDB no está conectado' });
+    }
+
+    // Obtener la evaluación de MongoDB
+    const evaluationMongo = await Evaluation.findOne({ evaluation_id_mysql: parseInt(id) });
+    if (!evaluationMongo) {
+      return res.status(404).json({ error: 'Evaluación no encontrada en MongoDB' });
+    }
+
+    // Actualizar cada token
+    const updateResults = [];
+    for (const tokenUpdate of tokens) {
+      const { legalization_id, actor_type, should_send } = tokenUpdate;
+      
+      const result = await EvaluationAccessToken.updateOne(
+        {
+          evaluation_id: evaluationMongo._id,
+          legalization_id: parseInt(legalization_id),
+          actor_type: actor_type
+        },
+        { $set: { should_send: should_send } }
+      );
+      
+      updateResults.push({
+        legalization_id,
+        actor_type,
+        should_send,
+        modified: result.modifiedCount > 0
+      });
+    }
+
+    res.json({
+      message: 'Tokens actualizados correctamente',
+      results: updateResults
+    });
+  } catch (error) {
+    console.error('Error al actualizar should_send:', error);
+    res.status(500).json({ error: 'Error al actualizar tokens', details: error.message });
   }
 };
 
@@ -3222,11 +3283,12 @@ export const updateEvaluation = async (req, res) => {
             // TODO: Cambiar a los correos reales cuando esté listo para producción
             const testEmail = 'juan.patino@mozartai.com.co';
 
-            // Enviar correos a estudiantes (todos a juan.patino por ahora)
+            // Enviar correos a estudiantes (solo si should_send es true)
             if (evaluationMongo.student_emails && evaluationMongo.student_emails.length > 0) {
               for (const studentEmail of evaluationMongo.student_emails) {
                 const token = tokenMap.get(`student_${studentEmail.legalization_id}_`);
-                if (token && token.link) {
+                // Solo enviar si el token existe, tiene link y should_send es true (o no está definido)
+                if (token && token.link && (token.should_send === undefined || token.should_send === true)) {
                   const names = nameMap.get(studentEmail.legalization_id) || {};
                   try {
                     const sent = await sendPracticeEvaluationEmail({
@@ -3246,11 +3308,12 @@ export const updateEvaluation = async (req, res) => {
               }
             }
 
-            // Enviar correos a tutores (todos a juan.patino por ahora)
+            // Enviar correos a tutores (solo si should_send es true)
             if (evaluationMongo.boss_emails && evaluationMongo.boss_emails.length > 0) {
               for (const bossEmail of evaluationMongo.boss_emails) {
                 const token = tokenMap.get(`boss_${bossEmail.legalization_id}_`);
-                if (token && token.link) {
+                // Solo enviar si el token existe, tiene link y should_send es true (o no está definido)
+                if (token && token.link && (token.should_send === undefined || token.should_send === true)) {
                   const names = nameMap.get(bossEmail.legalization_id) || {};
                   try {
                     const sent = await sendPracticeEvaluationEmail({
@@ -3271,11 +3334,12 @@ export const updateEvaluation = async (req, res) => {
               }
             }
 
-            // Enviar correos a monitores (todos a juan.patino por ahora)
+            // Enviar correos a monitores (solo si should_send es true)
             if (evaluationMongo.monitor_emails && evaluationMongo.monitor_emails.length > 0) {
               for (const monitorEmail of evaluationMongo.monitor_emails) {
                 const token = tokenMap.get(`monitor_${monitorEmail.legalization_id}_${monitorEmail.monitor_type || ''}`);
-                if (token && token.link) {
+                // Solo enviar si el token existe, tiene link y should_send es true (o no está definido)
+                if (token && token.link && (token.should_send === undefined || token.should_send === true)) {
                   const names = nameMap.get(monitorEmail.legalization_id) || {};
                   try {
                     const sent = await sendPracticeEvaluationEmail({

@@ -9,6 +9,7 @@ import {
   getEvaluationById,
   getEvaluationMongoDetails,
   updateEvaluation,
+  updateTokenShouldSend,
   createQuestion,
   getQuestionsByEvaluation,
   generateTokens,
@@ -42,6 +43,7 @@ router.get('/monitoring', authenticateToken, getMonitoringEvaluations);
 router.get('/students', authenticateToken, getStudents);
 router.get('/monitoring/:id', authenticateToken, getMonitoringEvaluationById);
 router.get('/:id/mongo', authenticateToken, getEvaluationMongoDetails);
+router.put('/:id/tokens/should-send', authenticateToken, updateTokenShouldSend);
 router.get('/:id/response', authenticateToken, getEvaluationResponse);
 router.get('/:id/export', authenticateToken, exportEvaluationReport);
 router.post('/:id/test-templates', authenticateToken, testEmailTemplates);

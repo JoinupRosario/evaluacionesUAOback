@@ -43,6 +43,10 @@ const evaluationAccessTokenSchema = new mongoose.Schema({
     type: Date,
     required: true
   },
+  should_send: {
+    type: Boolean,
+    default: true // Por defecto todos están marcados para enviar
+  },
   monitor_type: {
     type: String,
     enum: ['user_tutor', 'user_tutor_2'],

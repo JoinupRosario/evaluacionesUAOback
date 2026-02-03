@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
  */
 export const getLogoUrl = () => {
   // Usar la URL externa del logo en lugar de base64
-  return 'https://avasalud-1.s3.us-east-1.amazonaws.com/clinics/patients/undefined/header-P3vrLVaL.png';
+  return 'https://avasalud-1.s3.us-east-1.amazonaws.com/clinics/patients/undefined/logouao.png';
 };
 
 /**
@@ -110,7 +110,7 @@ export const getEmailTextVersion = (actorType, variables = {}) => {
   switch (actorType) {
     case 'student':
       greeting = `Estimado Estudiante: ${variables.studentName || ''}`;
-      content = `Para la Universidad del Rosario es muy importante conocer su desempeño en la práctica
+      content = `Para la Universidad Autónoma de Occidente es muy importante conocer su desempeño en la práctica
 
 Programa: ${variables.programName || ''}
 
@@ -120,7 +120,7 @@ Nuestras más sincero agradecimiento por la retroalimentación de su proceso for
       break;
     case 'boss':
       greeting = `Estimado Tutor: ${variables.tutorName || ''}`;
-      content = `Para la Universidad del Rosario es muy importante conocer el desempeño de nuestro estudiante en práctica
+      content = `Para la Universidad Autónoma de Occidente es muy importante conocer el desempeño de nuestro estudiante en práctica
 
 Nombre estudiante: ${variables.studentName || ''}
 Programa: ${variables.programName || ''}
@@ -131,7 +131,7 @@ Nuestras más sincero agradecimiento por su colaboración en el proceso formativ
       break;
     case 'monitor':
       greeting = `Estimado Monitor: ${variables.tutorName || ''}`;
-      content = `Para la Universidad del Rosario es muy importante conocer el desempeño de nuestro estudiante en práctica
+      content = `Para la Universidad Autónoma de Occidente es muy importante conocer el desempeño de nuestro estudiante en práctica
 
 Nombre estudiante: ${variables.studentName || ''}
 Programa: ${variables.programName || ''}
@@ -146,10 +146,5 @@ Nuestras más sincero agradecimiento por su colaboración en el proceso formativ
   
   return `${greeting}
 
-${content}
-
-Cordial Saludo,
-
-Dirección de Evaluación, Permanencia y Éxito Estudiantil
-Universidad del Rosario`;
+${content}`;
 };

@@ -35,7 +35,7 @@ export const sendEvaluationTestEmail = async (evaluationData) => {
       return false;
     }
 
-    const senderEmail = 'info@mozartai.com.co';
+    const senderEmail = 'practicasypasantias@uao.edu.co';
     const testEmail = 'juan.patino@mozartai.com.co';
 
     // Formatear fechas
@@ -168,7 +168,7 @@ export const sendPracticeEvaluationEmail = async (emailData) => {
       return false;
     }
 
-    const senderEmail = 'info@mozartai.com.co';
+    const senderEmail = 'practicasypasantias@uao.edu.co';
     
     // Obtener la URL del logo (si no se proporciona logoUrl, usar la URL por defecto)
     const finalLogoUrl = logoUrl || getLogoUrl();
