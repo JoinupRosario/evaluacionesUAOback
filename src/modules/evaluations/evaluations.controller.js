@@ -2629,6 +2629,168 @@ export const getEvaluationResponse = async (req, res) => {
   }
 };
 
+/**
+ * Obtiene los actores de una evaluación del sistema anterior (solo en MySQL)
+ * Esta función se usa cuando la evaluación no existe en MongoDB
+ */
+const getActorsFromLegacyEvaluation = async (req, res, evaluationId) => {
+  try {
+    // Obtener la evaluación desde MySQL
+    const [evaluations] = await pool.query(`
+      SELECT 
+        e.evaluation_id as id,
+        e.name,
+        e.period,
+        e.type_survey,
+        e.practice_type,
+        e.total_bosses,
+        e.total_students,
+        e.percentage_bosses,
+        e.percentage_students,
+        e.start_date,
+        e.finish_date,
+        e.alert_value,
+        e.alert_unit,
+        e.alert_when,
+        e.status,
+        e.date_creation,
+        e.user_creator
+      FROM evaluations e
+      WHERE e.evaluation_id = ?
+    `, [evaluationId]);
+
+    if (evaluations.length === 0) {
+      return res.status(404).json({ error: 'Evaluación no encontrada' });
+    }
+
+    const evaluation = evaluations[0];
+
+    // Obtener nombre del período
+    let periodName = '';
+    if (evaluation.period) {
+      const [periods] = await pool.query(
+        'SELECT period FROM academic_period WHERE id = ?',
+        [evaluation.period]
+      );
+      if (periods.length > 0) {
+        periodName = periods[0].period;
+      }
+    }
+
+    // Obtener programas asociados
+    const [programs] = await pool.query(`
+      SELECT program_id
+      FROM evaluation_program
+      WHERE evaluation_id = ?
+    `, [evaluationId]);
+
+    const programIds = programs.map(p => p.program_id);
+
+    // Construir condiciones para obtener actores
+    let whereConditions = ['apl.academic_period_apl = ?'];
+    let queryParams = [evaluation.period];
+
+    if (evaluation.practice_type) {
+      whereConditions.push('apl.practice_type = ?');
+      queryParams.push(evaluation.practice_type);
+    }
+
+    // Filtro por programas asociados
+    if (programIds.length > 0) {
+      whereConditions.push(`
+        EXISTS (
+          SELECT 1 
+          FROM evaluation_program ep
+          WHERE ep.evaluation_id = ?
+            AND ep.program_id = apl.program_apl
+        )
+      `);
+      queryParams.push(evaluationId);
+    }
+
+    // Filtrar por estados válidos
+    const estadosExcluidos = ['CTP_CANCEL', 'CANCELLED', 'DELETED', 'CTP_REJECTED'];
+    whereConditions.push(`apl.status_apl NOT IN ('${estadosExcluidos.join("', '")}')`);
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Obtener correos de estudiantes con sus IDs de legalización
+    const [studentsEmails] = await pool.query(`
+      SELECT 
+        apl.academic_practice_legalized_id as legalization_id,
+        COALESCE(NULLIF(u.personal_email, ''), p.alternate_email) as email
+      FROM academic_practice_legalized apl
+      INNER JOIN postulant p ON apl.postulant_apl = p.postulant_id
+      INNER JOIN user u ON p.postulant_id = u.id
+      WHERE ${whereClause}
+        AND (
+          (u.personal_email IS NOT NULL AND u.personal_email != '')
+          OR (p.alternate_email IS NOT NULL AND p.alternate_email != '')
+        )
+    `, queryParams);
+
+    // Obtener correos de jefes con sus IDs de legalización
+    const [bossesEmails] = await pool.query(`
+      SELECT 
+        apl.academic_practice_legalized_id as legalization_id,
+        pb.email
+      FROM academic_practice_legalized apl
+      INNER JOIN practice_boss pb ON apl.boss_apl = pb.boss_id
+      WHERE ${whereClause}
+        AND apl.boss_apl IS NOT NULL
+        AND pb.email IS NOT NULL
+        AND pb.email != ''
+    `, queryParams);
+
+    // Construir respuesta similar a la de MongoDB
+    const evaluationData = {
+      _id: `legacy-${evaluationId}`,
+      evaluation_id_mysql: evaluationId,
+      name: evaluation.name,
+      period: periodName || evaluation.period,
+      practice_type: evaluation.practice_type,
+      type_survey: evaluation.type_survey,
+      total_bosses: bossesEmails.length,
+      total_students: studentsEmails.length,
+      total_monitors: 0,
+      percentage_bosses: evaluation.percentage_bosses || 0,
+      percentage_students: evaluation.percentage_students || 0,
+      start_date: evaluation.start_date,
+      finish_date: evaluation.finish_date,
+      alert_value: evaluation.alert_value,
+      alert_unit: evaluation.alert_unit,
+      alert_when: evaluation.alert_when,
+      program_faculty_ids: programIds,
+      status: evaluation.status || 'CREATED',
+      user_creator: evaluation.user_creator,
+      createdAt: evaluation.date_creation,
+      updatedAt: evaluation.date_creation,
+      is_legacy: true, // Indicador de que es del sistema anterior
+      // Correos con sus legalization_id (sin links ya que no se generaron)
+      student_emails: studentsEmails.map(item => ({
+        legalization_id: item.legalization_id,
+        email: item.email,
+        link: null,
+        usado: false
+      })),
+      boss_emails: bossesEmails.map(item => ({
+        legalization_id: item.legalization_id,
+        email: item.email,
+        link: null,
+        usado: false
+      })),
+      monitor_emails: [],
+      teacher_emails: [],
+      coordinator_emails: []
+    };
+
+    return res.json(evaluationData);
+  } catch (error) {
+    console.error('Error al obtener actores de evaluación legacy:', error);
+    return res.status(500).json({ error: 'Error al obtener actores de la evaluación', details: error.message });
+  }
+};
+
 export const getEvaluationMongoDetails = async (req, res) => {
   try {
     const { id } = req.params;
@@ -2640,8 +2802,9 @@ export const getEvaluationMongoDetails = async (req, res) => {
 
     const evaluationMongo = await Evaluation.findOne({ evaluation_id_mysql: parseInt(id) });
     
+    // Si no está en MongoDB, obtener actores dinámicamente desde MySQL (sistema anterior)
     if (!evaluationMongo) {
-      return res.status(404).json({ error: 'Evaluación no encontrada en MongoDB' });
+      return await getActorsFromLegacyEvaluation(req, res, parseInt(id));
     }
 
     // Obtener tokens de acceso generados
