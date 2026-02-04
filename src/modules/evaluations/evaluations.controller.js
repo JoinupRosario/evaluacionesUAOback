@@ -4521,3 +4521,516 @@ export const exportEvaluationReport = async (req, res) => {
     }
   }
 };
+
+/**
+ * Exporta un reporte de links de evaluación para los estudiantes seleccionados
+ * Incluye información de legalización, estudiante, jefe y links
+ */
+export const exportLinkReport = async (req, res) => {
+  let connection;
+  
+  try {
+    const { id } = req.params;
+    const { legalization_ids } = req.body;
+    const EVALUATION_ID = parseInt(id);
+
+    if (!EVALUATION_ID || isNaN(EVALUATION_ID)) {
+      return res.status(400).json({ error: 'ID de evaluación inválido' });
+    }
+
+    if (!legalization_ids || !Array.isArray(legalization_ids) || legalization_ids.length === 0) {
+      return res.status(400).json({ error: 'Se requiere al menos un legalization_id' });
+    }
+
+    console.log(`📊 Generando reporte de links para evaluación ${EVALUATION_ID} con ${legalization_ids.length} registros...`);
+    
+    // Conectar a MySQL
+    connection = await pool.getConnection();
+
+    // Obtener información de la evaluación
+    const [evaluationInfo] = await connection.query(`
+      SELECT 
+        e.evaluation_id,
+        e.name,
+        ap.period as period_name,
+        COALESCE(i_survey.value, CAST(e.type_survey AS CHAR)) as type_survey_name,
+        COALESCE(i_practice.value, CAST(e.practice_type AS CHAR)) as practice_type_name,
+        e.start_date,
+        e.finish_date,
+        e.status
+      FROM evaluations e
+      LEFT JOIN academic_period ap ON e.period = ap.id
+      LEFT JOIN item i_survey ON e.type_survey = i_survey.id
+      LEFT JOIN item i_practice ON e.practice_type = i_practice.id
+      WHERE e.evaluation_id = ?
+    `, [EVALUATION_ID]);
+
+    if (evaluationInfo.length === 0) {
+      return res.status(404).json({ error: `No se encontró la evaluación ${EVALUATION_ID}` });
+    }
+
+    const evaluation = evaluationInfo[0];
+
+    // Obtener información completa de las legalizaciones seleccionadas
+    const placeholders = legalization_ids.map(() => '?').join(',');
+    const [legalizations] = await connection.query(`
+      SELECT 
+        apl.academic_practice_legalized_id as legalization_id,
+        -- Información del estudiante
+        CONCAT(u_student.name, ' ', u_student.last_name) as student_name,
+        u_student.user_name as student_code,
+        COALESCE(NULLIF(u_student.personal_email, ''), p.alternate_email) as student_email,
+        -- Información del programa
+        pr.name as program_name,
+        -- Información de la empresa
+        COALESCE(c.trade_name, c.business_name) as company_name,
+        -- Información del jefe
+        CONCAT(pb.first_name, ' ', pb.last_name) as boss_name,
+        pb.email as boss_email,
+        pb.phone_number as boss_phone,
+        pb.job as boss_job,
+        -- Información de la práctica
+        apl.date_start_practice,
+        apl.date_end_practice,
+        apl.status_apl as practice_status,
+        -- Información del monitor/tutor
+        CONCAT(COALESCE(u_monitor.name, ''), ' ', COALESCE(u_monitor.last_name, '')) as monitor_name,
+        COALESCE(NULLIF(u_monitor.personal_email, ''), u_monitor.user_name) as monitor_email
+      FROM academic_practice_legalized apl
+      LEFT JOIN postulant p ON apl.postulant_apl = p.postulant_id
+      LEFT JOIN user u_student ON p.postulant_id = u_student.id
+      LEFT JOIN practice_boss pb ON apl.boss_apl = pb.boss_id
+      LEFT JOIN company c ON apl.company_apl = c.id
+      LEFT JOIN program pr ON apl.program_apl = pr.id
+      LEFT JOIN user u_monitor ON apl.teacher = u_monitor.id
+      WHERE apl.academic_practice_legalized_id IN (${placeholders})
+      ORDER BY u_student.last_name, u_student.name
+    `, legalization_ids);
+
+    // Obtener links de MongoDB
+    let linksMap = new Map();
+    if (mongoose.connection.readyState === 1) {
+      const evaluationMongo = await Evaluation.findOne({ evaluation_id_mysql: EVALUATION_ID });
+      if (evaluationMongo) {
+        const accessTokens = await EvaluationAccessToken.find({ 
+          evaluation_id: evaluationMongo._id,
+          legalization_id: { $in: legalization_ids }
+        });
+        
+        accessTokens.forEach(token => {
+          const key = `${token.actor_type}_${token.legalization_id}`;
+          linksMap.set(key, {
+            link: token.link,
+            usado: token.usado,
+            fecha_uso: token.fecha_uso
+          });
+        });
+      }
+    }
+
+    // Crear el workbook de Excel
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Sistema de Evaluaciones UAO';
+    workbook.created = new Date();
+
+    // Hoja de Reporte de Links
+    const linkSheet = workbook.addWorksheet('Reporte de Links');
+    linkSheet.columns = [
+      { header: 'ID Legalización', key: 'legalization_id', width: 15 },
+      { header: 'Estudiante', key: 'student_name', width: 35 },
+      { header: 'Código', key: 'student_code', width: 15 },
+      { header: 'Correo Estudiante', key: 'student_email', width: 35 },
+      { header: 'Programa', key: 'program_name', width: 30 },
+      { header: 'Empresa', key: 'company_name', width: 30 },
+      { header: 'Jefe de Práctica', key: 'boss_name', width: 30 },
+      { header: 'Correo Jefe', key: 'boss_email', width: 35 },
+      { header: 'Teléfono Jefe', key: 'boss_phone', width: 15 },
+      { header: 'Cargo Jefe', key: 'boss_job', width: 25 },
+      { header: 'Tutor/Monitor', key: 'monitor_name', width: 30 },
+      { header: 'Correo Tutor', key: 'monitor_email', width: 35 },
+      { header: 'Fecha Inicio', key: 'date_start', width: 12 },
+      { header: 'Fecha Fin', key: 'date_end', width: 12 },
+      { header: 'Link Estudiante', key: 'student_link', width: 60 },
+      { header: 'Estado Est.', key: 'student_status', width: 12 },
+      { header: 'Link Jefe', key: 'boss_link', width: 60 },
+      { header: 'Estado Jefe', key: 'boss_status', width: 12 }
+    ];
+
+    // Agregar datos
+    legalizations.forEach(leg => {
+      const studentLinkData = linksMap.get(`student_${leg.legalization_id}`) || {};
+      const bossLinkData = linksMap.get(`boss_${leg.legalization_id}`) || {};
+      
+      linkSheet.addRow({
+        legalization_id: leg.legalization_id,
+        student_name: leg.student_name || '',
+        student_code: leg.student_code || '',
+        student_email: leg.student_email || '',
+        program_name: leg.program_name || '',
+        company_name: leg.company_name || '',
+        boss_name: leg.boss_name || '',
+        boss_email: leg.boss_email || '',
+        boss_phone: leg.boss_phone ? String(leg.boss_phone) : '',
+        boss_job: leg.boss_job || '',
+        monitor_name: leg.monitor_name?.trim() || '',
+        monitor_email: leg.monitor_email || '',
+        date_start: leg.date_start_practice ? new Date(leg.date_start_practice).toLocaleDateString('es-ES') : '',
+        date_end: leg.date_end_practice ? new Date(leg.date_end_practice).toLocaleDateString('es-ES') : '',
+        student_link: studentLinkData.link || 'No generado',
+        student_status: studentLinkData.usado ? 'Respondido' : 'Pendiente',
+        boss_link: bossLinkData.link || 'No generado',
+        boss_status: bossLinkData.usado ? 'Respondido' : 'Pendiente'
+      });
+    });
+
+    // Aplicar formato al header
+    linkSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    linkSheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF8B0000' } // Rojo UAO
+    };
+    linkSheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    
+    // Aplicar bordes y formato a todas las celdas con datos
+    linkSheet.eachRow((row, rowNumber) => {
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' }
+        };
+        if (rowNumber > 1) {
+          cell.alignment = { vertical: 'middle', wrapText: true };
+        }
+      });
+    });
+
+    // Colorear estados
+    linkSheet.eachRow((row, rowNumber) => {
+      if (rowNumber > 1) {
+        // Estado estudiante (columna 16)
+        const studentStatusCell = row.getCell(16);
+        if (studentStatusCell.value === 'Respondido') {
+          studentStatusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF90EE90' } };
+        } else {
+          studentStatusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEB9C' } };
+        }
+        // Estado jefe (columna 18)
+        const bossStatusCell = row.getCell(18);
+        if (bossStatusCell.value === 'Respondido') {
+          bossStatusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF90EE90' } };
+        } else {
+          bossStatusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEB9C' } };
+        }
+      }
+    });
+
+    // Agregar hoja de resumen
+    const summarySheet = workbook.addWorksheet('Resumen');
+    summarySheet.columns = [
+      { header: 'Campo', key: 'field', width: 25 },
+      { header: 'Valor', key: 'value', width: 50 }
+    ];
+    
+    summarySheet.addRows([
+      { field: 'Evaluación', value: evaluation.name },
+      { field: 'Período', value: evaluation.period_name },
+      { field: 'Tipo Encuesta', value: evaluation.type_survey_name },
+      { field: 'Tipo Práctica', value: evaluation.practice_type_name },
+      { field: 'Fecha Inicio', value: evaluation.start_date ? new Date(evaluation.start_date).toLocaleDateString('es-ES') : '' },
+      { field: 'Fecha Fin', value: evaluation.finish_date ? new Date(evaluation.finish_date).toLocaleDateString('es-ES') : '' },
+      { field: 'Estado', value: evaluation.status },
+      { field: 'Total Registros Exportados', value: legalizations.length },
+      { field: 'Fecha de Exportación', value: new Date().toLocaleString('es-ES') }
+    ]);
+
+    summarySheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    summarySheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF8B0000' }
+    };
+
+    // Enviar archivo
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=reporte_links_${EVALUATION_ID}_${new Date().toISOString().split('T')[0]}.xlsx`);
+    
+    await workbook.xlsx.write(res);
+    
+    console.log('✅ Reporte de links generado exitosamente!');
+    
+  } catch (error) {
+    console.error('❌ Error al generar reporte de links:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Error al generar reporte de links', details: error.message });
+    }
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};
+
+/**
+ * Exporta las respuestas de evaluación para los estudiantes seleccionados
+ * Las respuestas vienen de MongoDB (PracticeEvaluation), la info de estudiantes de MySQL
+ */
+export const exportAnswersReport = async (req, res) => {
+  let connection;
+  
+  try {
+    const { id } = req.params;
+    const { legalization_ids } = req.body;
+    const EVALUATION_ID = parseInt(id);
+
+    if (!EVALUATION_ID || isNaN(EVALUATION_ID)) {
+      return res.status(400).json({ error: 'ID de evaluación inválido' });
+    }
+
+    if (!legalization_ids || !Array.isArray(legalization_ids) || legalization_ids.length === 0) {
+      return res.status(400).json({ error: 'Se requiere al menos un legalization_id' });
+    }
+
+    console.log(`📊 Generando reporte de respuestas para evaluación ${EVALUATION_ID} con ${legalization_ids.length} registros...`);
+    
+    // Conectar a MySQL
+    connection = await pool.getConnection();
+
+    // Obtener información de la evaluación desde MySQL
+    const [evaluationInfo] = await connection.query(`
+      SELECT 
+        e.evaluation_id,
+        e.name,
+        ap.period as period_name,
+        COALESCE(i_survey.value, CAST(e.type_survey AS CHAR)) as type_survey_name
+      FROM evaluations e
+      LEFT JOIN academic_period ap ON e.period = ap.id
+      LEFT JOIN item i_survey ON e.type_survey = i_survey.id
+      WHERE e.evaluation_id = ?
+    `, [EVALUATION_ID]);
+
+    if (evaluationInfo.length === 0) {
+      return res.status(404).json({ error: `No se encontró la evaluación ${EVALUATION_ID}` });
+    }
+
+    const evaluation = evaluationInfo[0];
+
+    // Obtener la evaluación de MongoDB
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ error: 'MongoDB no está conectado' });
+    }
+
+    const evaluationMongo = await Evaluation.findOne({ evaluation_id_mysql: EVALUATION_ID });
+    if (!evaluationMongo) {
+      return res.status(404).json({ error: 'No se encontró la evaluación en MongoDB' });
+    }
+
+    // Obtener las respuestas de PracticeEvaluation en MongoDB
+    const practiceEvaluationsMongo = await PracticeEvaluation.find({
+      evaluation_id: evaluationMongo._id,
+      academic_practice_legalized_id: { $in: legalization_ids }
+    });
+
+    // Crear un mapa de respuestas por legalization_id
+    const answersMap = new Map();
+    practiceEvaluationsMongo.forEach(pe => {
+      answersMap.set(pe.academic_practice_legalized_id, {
+        med_boss_status: pe.med_boss_status,
+        med_student_status: pe.med_student_status,
+        med_boss_data: pe.med_boss_data,
+        med_student_data: pe.med_student_data,
+        last_date_answer_boss: pe.last_date_answer_boss,
+        last_date_answer_student: pe.last_date_answer_student
+      });
+    });
+
+    // Obtener información complementaria de MySQL (estudiantes, jefes, etc.)
+    const placeholders = legalization_ids.map(() => '?').join(',');
+    const [legalizations] = await connection.query(`
+      SELECT 
+        apl.academic_practice_legalized_id as legalization_id,
+        CONCAT(u_student.name, ' ', u_student.last_name) as student_name,
+        u_student.user_name as student_code,
+        COALESCE(NULLIF(u_student.personal_email, ''), p.alternate_email) as student_email,
+        CONCAT(pb.first_name, ' ', pb.last_name) as boss_name,
+        pb.email as boss_email,
+        pr.name as program_name,
+        COALESCE(c.trade_name, c.business_name) as company_name
+      FROM academic_practice_legalized apl
+      LEFT JOIN postulant p ON apl.postulant_apl = p.postulant_id
+      LEFT JOIN user u_student ON p.postulant_id = u_student.id
+      LEFT JOIN practice_boss pb ON apl.boss_apl = pb.boss_id
+      LEFT JOIN company c ON apl.company_apl = c.id
+      LEFT JOIN program pr ON apl.program_apl = pr.id
+      WHERE apl.academic_practice_legalized_id IN (${placeholders})
+      ORDER BY u_student.last_name, u_student.name
+    `, legalization_ids);
+
+    // Función para parsear JSON de respuestas
+    function parseEvaluationData(jsonData) {
+      if (!jsonData || (typeof jsonData === 'string' && jsonData.trim() === '')) return [];
+      try {
+        const data = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
+        if (!Array.isArray(data) || data.length === 0) return [];
+        return data.map((item, index) => {
+          const questionId = item.medPreId || item.id || (index + 1);
+          let question = item.medPrePregunta || item.pregunta || item.question || '';
+          const closedAnswer = item.medResRespuesta || item.respuesta || item.answer || '';
+          const openAnswer = item.medEncResAbierta || item.respuesta_abierta || '';
+          
+          let fullAnswer = '';
+          if (closedAnswer && openAnswer && openAnswer.trim() !== '') {
+            fullAnswer = `${closedAnswer} - ${openAnswer}`;
+          } else if (closedAnswer) {
+            fullAnswer = String(closedAnswer);
+          } else if (openAnswer && openAnswer.trim() !== '') {
+            fullAnswer = openAnswer;
+          }
+          
+          return { question_id: questionId, question, answer: fullAnswer };
+        });
+      } catch (error) {
+        console.warn('Error parseando respuestas:', error.message);
+        return [];
+      }
+    }
+
+    // Crear el workbook
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Sistema de Evaluaciones UAO';
+    workbook.created = new Date();
+
+    // Hoja de Respuestas de Estudiantes
+    const studentSheet = workbook.addWorksheet('Respuestas Estudiantes');
+    studentSheet.columns = [
+      { header: 'ID Legalización', key: 'legalization_id', width: 15 },
+      { header: 'Estudiante', key: 'student_name', width: 30 },
+      { header: 'Código', key: 'student_code', width: 15 },
+      { header: 'Correo', key: 'student_email', width: 30 },
+      { header: 'Programa', key: 'program_name', width: 30 },
+      { header: 'Empresa', key: 'company_name', width: 25 },
+      { header: 'Estado', key: 'status', width: 12 },
+      { header: 'Fecha Respuesta', key: 'date_answer', width: 18 },
+      { header: 'ID Pregunta', key: 'question_id', width: 12 },
+      { header: 'Pregunta', key: 'question', width: 50 },
+      { header: 'Respuesta', key: 'answer', width: 50 }
+    ];
+
+    // Hoja de Respuestas de Jefes
+    const bossSheet = workbook.addWorksheet('Respuestas Jefes');
+    bossSheet.columns = [
+      { header: 'ID Legalización', key: 'legalization_id', width: 15 },
+      { header: 'Estudiante', key: 'student_name', width: 30 },
+      { header: 'Jefe', key: 'boss_name', width: 30 },
+      { header: 'Correo Jefe', key: 'boss_email', width: 30 },
+      { header: 'Empresa', key: 'company_name', width: 25 },
+      { header: 'Estado', key: 'status', width: 12 },
+      { header: 'Fecha Respuesta', key: 'date_answer', width: 18 },
+      { header: 'ID Pregunta', key: 'question_id', width: 12 },
+      { header: 'Pregunta', key: 'question', width: 50 },
+      { header: 'Respuesta', key: 'answer', width: 50 }
+    ];
+
+    // Procesar datos combinando MySQL y MongoDB
+    legalizations.forEach(record => {
+      const mongoData = answersMap.get(record.legalization_id) || {};
+      
+      // Procesar respuestas de estudiante
+      const studentAnswers = parseEvaluationData(mongoData.med_student_data);
+      if (studentAnswers.length > 0) {
+        studentAnswers.forEach((answer, index) => {
+          studentSheet.addRow({
+            legalization_id: index === 0 ? record.legalization_id : '',
+            student_name: index === 0 ? record.student_name : '',
+            student_code: index === 0 ? record.student_code : '',
+            student_email: index === 0 ? record.student_email : '',
+            program_name: index === 0 ? record.program_name : '',
+            company_name: index === 0 ? record.company_name : '',
+            status: index === 0 ? (mongoData.med_student_status || 'Pendiente') : '',
+            date_answer: index === 0 && mongoData.last_date_answer_student ? new Date(mongoData.last_date_answer_student).toLocaleString('es-ES') : '',
+            question_id: answer.question_id,
+            question: answer.question,
+            answer: answer.answer
+          });
+        });
+      } else {
+        studentSheet.addRow({
+          legalization_id: record.legalization_id,
+          student_name: record.student_name,
+          student_code: record.student_code,
+          student_email: record.student_email,
+          program_name: record.program_name,
+          company_name: record.company_name,
+          status: mongoData.med_student_status || 'Pendiente',
+          date_answer: '',
+          question_id: '',
+          question: 'SIN RESPUESTAS',
+          answer: ''
+        });
+      }
+
+      // Procesar respuestas de jefe
+      const bossAnswers = parseEvaluationData(mongoData.med_boss_data);
+      if (bossAnswers.length > 0) {
+        bossAnswers.forEach((answer, index) => {
+          bossSheet.addRow({
+            legalization_id: index === 0 ? record.legalization_id : '',
+            student_name: index === 0 ? record.student_name : '',
+            boss_name: index === 0 ? record.boss_name : '',
+            boss_email: index === 0 ? record.boss_email : '',
+            company_name: index === 0 ? record.company_name : '',
+            status: index === 0 ? (mongoData.med_boss_status || 'Pendiente') : '',
+            date_answer: index === 0 && mongoData.last_date_answer_boss ? new Date(mongoData.last_date_answer_boss).toLocaleString('es-ES') : '',
+            question_id: answer.question_id,
+            question: answer.question,
+            answer: answer.answer
+          });
+        });
+      } else {
+        bossSheet.addRow({
+          legalization_id: record.legalization_id,
+          student_name: record.student_name,
+          boss_name: record.boss_name,
+          boss_email: record.boss_email,
+          company_name: record.company_name,
+          status: mongoData.med_boss_status || 'Pendiente',
+          date_answer: '',
+          question_id: '',
+          question: 'SIN RESPUESTAS',
+          answer: ''
+        });
+      }
+    });
+
+    // Aplicar formato a headers
+    [studentSheet, bossSheet].forEach(sheet => {
+      sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      sheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF8B0000' }
+      };
+      sheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+
+    // Enviar archivo
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=respuestas_${EVALUATION_ID}_${new Date().toISOString().split('T')[0]}.xlsx`);
+    
+    await workbook.xlsx.write(res);
+    
+    console.log('✅ Reporte de respuestas generado exitosamente!');
+    
+  } catch (error) {
+    console.error('❌ Error al generar reporte de respuestas:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Error al generar reporte de respuestas', details: error.message });
+    }
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+};

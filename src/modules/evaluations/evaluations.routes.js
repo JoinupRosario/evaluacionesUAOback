@@ -25,7 +25,9 @@ import {
   submitEvaluationResponse,
   getEvaluationResponse,
   testEmailTemplates,
-  exportEvaluationReport
+  exportEvaluationReport,
+  exportLinkReport,
+  exportAnswersReport
 } from './evaluations.controller.js';
 import { authenticateToken } from '../../middleware/auth.js';
 
@@ -46,6 +48,8 @@ router.get('/:id/mongo', authenticateToken, getEvaluationMongoDetails);
 router.put('/:id/tokens/should-send', authenticateToken, updateTokenShouldSend);
 router.get('/:id/response', authenticateToken, getEvaluationResponse);
 router.get('/:id/export', authenticateToken, exportEvaluationReport);
+router.post('/:id/export-links', authenticateToken, exportLinkReport);
+router.post('/:id/export-answers', authenticateToken, exportAnswersReport);
 router.post('/:id/test-templates', authenticateToken, testEmailTemplates);
 router.get('/:id', authenticateToken, getEvaluationById);
 router.put('/:id', authenticateToken, updateEvaluation);
