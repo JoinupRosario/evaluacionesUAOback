@@ -3,6 +3,7 @@ import User from './models/User.js';
 import pool from '../../config/mysql.js';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { ConfidentialClientApplication } from '@azure/msal-node';
 
 dotenv.config();
 
@@ -205,5 +206,166 @@ export const changePassword = async (req, res) => {
   } catch (error) {
     console.error('Error al cambiar contraseña:', error);
     res.status(500).json({ error: 'Error al cambiar contraseña' });
+  }
+};
+
+// Función para obtener la instancia de MSAL (lazy initialization)
+let pca = null;
+
+const getMSALInstance = () => {
+  if (!pca) {
+    // Verificar que las variables de entorno estén configuradas
+    if (!process.env.AZURE_CLIENT_ID || !process.env.AZURE_TENANT_ID || !process.env.AZURE_CLIENT_SECRET) {
+      throw new Error('Azure AD credentials not configured. Please set AZURE_CLIENT_ID, AZURE_TENANT_ID, and AZURE_CLIENT_SECRET in your .env file.');
+    }
+
+    const msalConfig = {
+      auth: {
+        clientId: process.env.AZURE_CLIENT_ID,
+        authority: `https://login.microsoftonline.com/${process.env.AZURE_TENANT_ID}`,
+        clientSecret: process.env.AZURE_CLIENT_SECRET,
+      },
+    };
+
+    pca = new ConfidentialClientApplication(msalConfig);
+  }
+  return pca;
+};
+
+// Iniciar login con Azure AD
+export const azureLogin = async (req, res) => {
+  try {
+    const msalInstance = getMSALInstance();
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    // El redirect URI apunta al frontend con la ruta que el cliente configuró en Azure AD
+    const redirectUri = `${frontendUrl}/api/auth/azure/callback`;
+
+    // Generar URL de autorización
+    const authCodeUrlParameters = {
+      scopes: ['openid', 'profile', 'email'],
+      redirectUri: redirectUri,
+    };
+
+    const authUrl = await msalInstance.getAuthCodeUrl(authCodeUrlParameters);
+    
+    // Redirigir al usuario a Azure AD
+    res.redirect(authUrl);
+  } catch (error) {
+    console.error('Error al iniciar login con Azure AD:', error);
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    res.redirect(`${frontendUrl}/login?error=azure_login_failed&message=${encodeURIComponent(error.message)}`);
+  }
+};
+
+// Intercambiar código de Azure AD por token (llamado desde el frontend)
+export const azureExchangeCode = async (req, res) => {
+  try {
+    const { code } = req.body;
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const redirectUri = `${frontendUrl}/api/auth/azure/callback`;
+
+    if (!code) {
+      return res.status(400).json({ error: 'Código de autorización requerido' });
+    }
+
+    // Intercambiar código por token
+    const msalInstance = getMSALInstance();
+    const tokenRequest = {
+      code: code,
+      scopes: ['openid', 'profile', 'email'],
+      redirectUri: redirectUri,
+    };
+
+    const response = await msalInstance.acquireTokenByCode(tokenRequest);
+    
+    if (!response || !response.account) {
+      return res.status(400).json({ error: 'Error al obtener el token de Azure AD' });
+    }
+
+    const azureUser = response.account;
+    // Obtener email del account o de las claims del ID token
+    const email = azureUser.username || 
+                   azureUser.name || 
+                   (response.idTokenClaims && response.idTokenClaims.email) ||
+                   (response.idTokenClaims && response.idTokenClaims.preferred_username);
+
+    if (!email) {
+      console.error('No se pudo obtener el email del usuario de Azure AD:', {
+        account: azureUser,
+        idTokenClaims: response.idTokenClaims
+      });
+      return res.status(400).json({ error: 'No se encontró el email en el token de Azure AD' });
+    }
+
+    // Buscar usuario en MySQL por email (user_name, alternate_user_name o personal_email)
+    const [users] = await pool.query(
+      `SELECT id, name, last_name, user_name, alternate_user_name, personal_email, status, is_super_admin
+       FROM user 
+       WHERE (user_name = ? OR alternate_user_name = ? OR personal_email = ?)
+         AND status = 'ACTIVE'
+       LIMIT 1`,
+      [email, email, email]
+    );
+
+    if (!users || users.length === 0) {
+      return res.status(404).json({ 
+        error: 'Usuario no encontrado',
+        email: email 
+      });
+    }
+
+    const user = users[0];
+
+    // Verificar que el usuario tenga al menos un rol asignado en user_role
+    const [userRoles] = await pool.query(
+      `SELECT user_id FROM user_role WHERE user_id = ? LIMIT 1`,
+      [user.id]
+    );
+
+    if (!userRoles || userRoles.length === 0) {
+      return res.status(403).json({ error: 'Acceso denegado: el usuario no tiene roles asignados' });
+    }
+
+    // Determinar el rol basado en is_super_admin
+    const role = user.is_super_admin ? 'admin' : 'user';
+
+    // Generar token JWT
+    const token = jwt.sign(
+      { 
+        id: user.id.toString(), 
+        username: user.user_name,
+        email: user.personal_email || user.user_name,
+        role: role
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    // Devolver el token y datos del usuario como JSON
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        username: user.user_name,
+        email: user.personal_email || user.user_name,
+        name: `${user.name} ${user.last_name}`,
+        role: role
+      }
+    });
+  } catch (error) {
+    console.error('Error al intercambiar código de Azure AD:', error);
+    
+    // Manejar errores específicos de Azure AD
+    if (error.errorCode === 'invalid_grant' || error.message?.includes('already redeemed')) {
+      return res.status(400).json({ 
+        error: 'El código de autorización ya fue utilizado o ha expirado. Por favor, intenta iniciar sesión nuevamente.',
+        code: 'code_already_used'
+      });
+    }
+    
+    res.status(500).json({ 
+      error: 'Error al procesar la autenticación',
+      message: error.message || 'Error desconocido'
+    });
   }
 };
