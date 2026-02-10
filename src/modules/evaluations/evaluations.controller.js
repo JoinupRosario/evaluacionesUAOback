@@ -4846,6 +4846,36 @@ export const exportAnswersReport = async (req, res) => {
       });
     });
 
+    // Obtener las preguntas del Survey para estudiantes y jefes
+    const studentQuestionsMap = new Map();
+    const bossQuestionsMap = new Map();
+    
+    if (evaluationMongo.med_enc_id_student || evaluationMongo.med_enc_id_boss) {
+      const survey = await Survey.findOne({
+        $or: [
+          { 'student_form.item_code': evaluationMongo.med_enc_id_student },
+          { 'tutor_form.item_code': evaluationMongo.med_enc_id_boss }
+        ],
+        status: 'ACTIVE'
+      });
+
+      if (survey) {
+        // Mapa de preguntas para estudiantes
+        if (survey.student_form && survey.student_form.questions) {
+          survey.student_form.questions.forEach(q => {
+            studentQuestionsMap.set(q._id.toString(), q.question);
+          });
+        }
+        
+        // Mapa de preguntas para jefes (usando tutor_form)
+        if (survey.tutor_form && survey.tutor_form.questions) {
+          survey.tutor_form.questions.forEach(q => {
+            bossQuestionsMap.set(q._id.toString(), q.question);
+          });
+        }
+      }
+    }
+
     // Obtener información complementaria de MySQL (estudiantes, jefes, etc.)
     const placeholders = legalization_ids.map(() => '?').join(',');
     const [legalizations] = await connection.query(`
@@ -4868,17 +4898,48 @@ export const exportAnswersReport = async (req, res) => {
       ORDER BY u_student.last_name, u_student.name
     `, legalization_ids);
 
-    // Función para parsear JSON de respuestas
-    function parseEvaluationData(jsonData) {
+    // Función para parsear JSON de respuestas usando el mapa de preguntas
+    function parseEvaluationData(jsonData, questionsMap) {
       if (!jsonData || (typeof jsonData === 'string' && jsonData.trim() === '')) return [];
       try {
         const data = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
         if (!Array.isArray(data) || data.length === 0) return [];
         return data.map((item, index) => {
-          const questionId = item.medPreId || item.id || (index + 1);
-          let question = item.medPrePregunta || item.pregunta || item.question || '';
-          const closedAnswer = item.medResRespuesta || item.respuesta || item.answer || '';
-          const openAnswer = item.medEncResAbierta || item.respuesta_abierta || '';
+          // El pregunta_id viene como _id de MongoDB (ObjectId como string)
+          const preguntaId = item.pregunta_id || item.question_id || item.medPreId || item.id;
+          let preguntaIdStr = null;
+          
+          // Convertir a string, manejando ObjectId o string
+          if (preguntaId) {
+            if (typeof preguntaId === 'object' && preguntaId.toString) {
+              preguntaIdStr = preguntaId.toString();
+            } else {
+              preguntaIdStr = String(preguntaId);
+            }
+          }
+          
+          // Obtener el texto de la pregunta desde el mapa, o usar valores alternativos
+          let questionText = '';
+          if (preguntaIdStr && questionsMap && questionsMap.has(preguntaIdStr)) {
+            questionText = questionsMap.get(preguntaIdStr);
+          } else if (preguntaIdStr && questionsMap) {
+            // Intentar buscar sin los últimos caracteres (por si hay diferencias en el formato)
+            for (const [key, value] of questionsMap.entries()) {
+              if (key.includes(preguntaIdStr.substring(0, 8)) || preguntaIdStr.includes(key.substring(0, 8))) {
+                questionText = value;
+                break;
+              }
+            }
+          }
+          
+          // Si aún no tenemos el texto, usar fallback
+          if (!questionText) {
+            questionText = item.medPrePregunta || item.pregunta || item.question || item.texto || `Pregunta ${index + 1}`;
+          }
+          
+          // Obtener respuestas
+          const closedAnswer = item.medResRespuesta || item.respuesta || item.answer || item.valor || '';
+          const openAnswer = item.medEncResAbierta || item.respuesta_abierta || item.texto_libre || '';
           
           let fullAnswer = '';
           if (closedAnswer && openAnswer && openAnswer.trim() !== '') {
@@ -4889,7 +4950,11 @@ export const exportAnswersReport = async (req, res) => {
             fullAnswer = openAnswer;
           }
           
-          return { question_id: questionId, question, answer: fullAnswer };
+          return { 
+            question_id: preguntaIdStr || preguntaId || (index + 1), 
+            question: questionText, 
+            answer: fullAnswer 
+          };
         });
       } catch (error) {
         console.warn('Error parseando respuestas:', error.message);
@@ -4938,7 +5003,7 @@ export const exportAnswersReport = async (req, res) => {
       const mongoData = answersMap.get(record.legalization_id) || {};
       
       // Procesar respuestas de estudiante
-      const studentAnswers = parseEvaluationData(mongoData.med_student_data);
+      const studentAnswers = parseEvaluationData(mongoData.med_student_data, studentQuestionsMap);
       if (studentAnswers.length > 0) {
         studentAnswers.forEach((answer, index) => {
           studentSheet.addRow({
@@ -4972,7 +5037,7 @@ export const exportAnswersReport = async (req, res) => {
       }
 
       // Procesar respuestas de jefe
-      const bossAnswers = parseEvaluationData(mongoData.med_boss_data);
+      const bossAnswers = parseEvaluationData(mongoData.med_boss_data, bossQuestionsMap);
       if (bossAnswers.length > 0) {
         bossAnswers.forEach((answer, index) => {
           bossSheet.addRow({
