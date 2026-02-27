@@ -81,6 +81,11 @@ app.get('/', (req, res) => {
   });
 });
 
+// Health check para ALB/ECS (GET /ping)
+app.get('/ping', (req, res) => {
+  res.status(200).send('OK');
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/academics', academicsRoutes);
 app.use('/api/users', usersRoutes);
