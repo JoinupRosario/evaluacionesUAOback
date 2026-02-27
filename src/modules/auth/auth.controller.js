@@ -8,9 +8,10 @@ import { ConfidentialClientApplication } from '@azure/msal-node';
 dotenv.config();
 
 // Roles de CONEXIÓN (tabla role) que tienen acceso al sistema de evaluaciones
+// IMPORTANTE: deben coincidir exactamente con el campo `name` de la tabla `role` en la BD
 const ROLES_CON_ACCESO_EVALUACIONES = [
   'Monitor de práctica',
-  'Coordinador prácticas Pasantías',
+  'Coordinador Prácticas Pasantías',
   'Administrador General'
 ];
 

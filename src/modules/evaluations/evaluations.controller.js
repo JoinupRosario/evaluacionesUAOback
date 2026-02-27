@@ -1935,7 +1935,7 @@ export const getEvaluations = async (req, res) => {
           WHERE apl.teacher = ?
         )`);
         queryParams.push(userId);
-      } else if (conexionRole === 'Coordinador prácticas Pasantías') {
+      } else if (conexionRole === 'Coordinador Prácticas Pasantías') {
         // Solo evaluaciones cuyos programas están asignados al usuario en user_program
         whereConditions.push(`e.evaluation_id IN (
           SELECT ep.evaluation_id FROM evaluation_program ep
