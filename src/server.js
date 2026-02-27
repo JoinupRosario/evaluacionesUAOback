@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
 // Verificar conexiones antes de iniciar el servidor
 const initializeServer = async () => {
@@ -25,7 +25,7 @@ const initializeServer = async () => {
   }
   
   // Iniciar servidor
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
     console.log(`📡 Endpoints disponibles en http://localhost:${PORT}/api\n`);
   });
