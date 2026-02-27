@@ -7,6 +7,13 @@ import { ConfidentialClientApplication } from '@azure/msal-node';
 
 dotenv.config();
 
+// Roles de CONEXIÓN (tabla role) que tienen acceso al sistema de evaluaciones
+const ROLES_CON_ACCESO_EVALUACIONES = [
+  'Monitor de práctica',
+  'Coordinador prácticas Pasantías',
+  'Administrador General'
+];
+
 // Función para crear usuario de prueba (solo desarrollo)
 export const createTestUser = async (req, res) => {
   try {
@@ -101,6 +108,22 @@ export const login = async (req, res) => {
     // Comparar el hash
     if (passwordHash.toLowerCase() !== user.password_hash.toLowerCase()) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
+    }
+
+    if (!user.is_super_admin) {
+      const placeholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
+      const [userRoles] = await pool.query(
+        `SELECT ur.user_id FROM user_role ur
+         INNER JOIN role r ON ur.role_id = r.id
+         WHERE ur.user_id = ? AND r.name IN (${placeholders})
+         LIMIT 1`,
+        [user.id, ...ROLES_CON_ACCESO_EVALUACIONES]
+      );
+      if (!userRoles || userRoles.length === 0) {
+        return res.status(403).json({
+          error: 'Acceso denegado: no tienes un rol autorizado. Roles permitidos: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
+        });
+      }
     }
 
     // Determinar el rol basado en is_super_admin o usar un valor por defecto
@@ -316,17 +339,27 @@ export const azureExchangeCode = async (req, res) => {
 
     const user = users[0];
 
-    // Verificar que el usuario tenga al menos un rol asignado en user_role
-    const [userRoles] = await pool.query(
-      `SELECT user_id FROM user_role WHERE user_id = ? LIMIT 1`,
-      [user.id]
-    );
+    // Super admin siempre tiene acceso; resto debe tener al menos uno de los roles permitidos
+    if (!user.is_super_admin) {
+      const placeholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
+      const [userRoles] = await pool.query(
+        `SELECT ur.user_id, r.id AS role_id, r.name AS role_name
+         FROM user_role ur
+         INNER JOIN role r ON ur.role_id = r.id
+         WHERE ur.user_id = ? AND r.name IN (${placeholders})
+         LIMIT 1`,
+        [user.id, ...ROLES_CON_ACCESO_EVALUACIONES]
+      );
 
-    if (!userRoles || userRoles.length === 0) {
-      return res.status(403).json({ error: 'Acceso denegado: el usuario no tiene roles asignados' });
+      if (!userRoles || userRoles.length === 0) {
+        console.warn(`[Azure] Acceso denegado: usuario ${user.id} (${user.user_name}) no tiene ninguno de los roles: ${ROLES_CON_ACCESO_EVALUACIONES.join(', ')}`);
+        return res.status(403).json({
+          error: 'Acceso denegado: no tienes un rol autorizado para el sistema de evaluaciones. Los roles permitidos son: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
+        });
+      }
     }
 
-    // Determinar el rol basado en is_super_admin
+    // Determinar el rol para el JWT
     const role = user.is_super_admin ? 'admin' : 'user';
 
     // Generar token JWT
