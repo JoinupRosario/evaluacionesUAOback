@@ -273,6 +273,7 @@ export const azureLogin = async (req, res) => {
     const authCodeUrlParameters = {
       scopes: ['openid', 'profile', 'email'],
       redirectUri: redirectUri,
+      prompt: 'login', // Forzar pantalla de login aunque haya sesión activa en Azure
     };
 
     const authUrl = await msalInstance.getAuthCodeUrl(authCodeUrlParameters);

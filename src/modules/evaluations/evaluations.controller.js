@@ -1935,7 +1935,7 @@ export const getEvaluations = async (req, res) => {
           WHERE apl.teacher = ?
         )`);
         queryParams.push(userId);
-      } else if (conexionRole === 'Coordinador prácticas Pasantías' || conexionRole === 'Administrador General') {
+      } else if (conexionRole === 'Coordinador prácticas Pasantías') {
         // Solo evaluaciones cuyos programas están asignados al usuario en user_program
         whereConditions.push(`e.evaluation_id IN (
           SELECT ep.evaluation_id FROM evaluation_program ep
@@ -1944,6 +1944,7 @@ export const getEvaluations = async (req, res) => {
         )`);
         queryParams.push(userId);
       }
+      // Administrador General y super admin: sin filtro adicional, ven todas las evaluaciones
     }
 
     const whereClause = whereConditions.length > 0 
