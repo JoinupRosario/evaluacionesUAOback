@@ -110,27 +110,22 @@ export const login = async (req, res) => {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
-    let conexionRoleName = null;
-    if (!user.is_super_admin) {
-      const placeholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
-      const [userRoles] = await pool.query(
-        `SELECT ur.user_id, r.name AS role_name FROM user_role ur
-         INNER JOIN role r ON ur.role_id = r.id
-         WHERE ur.user_id = ? AND r.name IN (${placeholders})
-         LIMIT 1`,
-        [user.id, ...ROLES_CON_ACCESO_EVALUACIONES]
-      );
-      if (!userRoles || userRoles.length === 0) {
-        return res.status(403).json({
-          error: 'Acceso denegado: no tienes un rol autorizado. Roles permitidos: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
-        });
-      }
-      conexionRoleName = userRoles[0].role_name;
-    } else {
-      conexionRoleName = 'Administrador General';
+    // Siempre leer el rol desde user_role (ignorar is_super_admin para conexion_role)
+    const placeholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
+    const [userRoles] = await pool.query(
+      `SELECT ur.user_id, r.name AS role_name FROM user_role ur
+       INNER JOIN role r ON ur.role_id = r.id
+       WHERE ur.user_id = ? AND r.name IN (${placeholders})
+       LIMIT 1`,
+      [user.id, ...ROLES_CON_ACCESO_EVALUACIONES]
+    );
+    if (!userRoles || userRoles.length === 0) {
+      return res.status(403).json({
+        error: 'Acceso denegado: no tienes un rol autorizado. Roles permitidos: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
+      });
     }
+    const conexionRoleName = userRoles[0].role_name;
 
-    // Determinar el rol basado en is_super_admin o usar un valor por defecto
     const role = user.is_super_admin ? 'admin' : 'user';
 
     // Generar token JWT
@@ -368,29 +363,24 @@ export const azureExchangeCode = async (req, res) => {
 
     const user = users[0];
 
-    // Super admin siempre tiene acceso; resto debe tener al menos uno de los roles permitidos
-    let conexionRoleName = null;
-    if (!user.is_super_admin) {
-      const placeholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
-      const [userRoles] = await pool.query(
-        `SELECT ur.user_id, r.id AS role_id, r.name AS role_name
-         FROM user_role ur
-         INNER JOIN role r ON ur.role_id = r.id
-         WHERE ur.user_id = ? AND r.name IN (${placeholders})
-         LIMIT 1`,
-        [user.id, ...ROLES_CON_ACCESO_EVALUACIONES]
-      );
+    // Siempre leer el rol desde user_role (ignorar is_super_admin para conexion_role)
+    const azurePlaceholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
+    const [azureUserRoles] = await pool.query(
+      `SELECT ur.user_id, r.id AS role_id, r.name AS role_name
+       FROM user_role ur
+       INNER JOIN role r ON ur.role_id = r.id
+       WHERE ur.user_id = ? AND r.name IN (${azurePlaceholders})
+       LIMIT 1`,
+      [user.id, ...ROLES_CON_ACCESO_EVALUACIONES]
+    );
 
-      if (!userRoles || userRoles.length === 0) {
-        console.warn(`[Azure] Acceso denegado: usuario ${user.id} (${user.user_name}) no tiene ninguno de los roles: ${ROLES_CON_ACCESO_EVALUACIONES.join(', ')}`);
-        return res.status(403).json({
-          error: 'Acceso denegado: no tienes un rol autorizado para el sistema de evaluaciones. Los roles permitidos son: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
-        });
-      }
-      conexionRoleName = userRoles[0].role_name;
-    } else {
-      conexionRoleName = 'Administrador General';
+    if (!azureUserRoles || azureUserRoles.length === 0) {
+      console.warn(`[Azure] Acceso denegado: usuario ${user.id} (${user.user_name}) no tiene ninguno de los roles: ${ROLES_CON_ACCESO_EVALUACIONES.join(', ')}`);
+      return res.status(403).json({
+        error: 'Acceso denegado: no tienes un rol autorizado para el sistema de evaluaciones. Los roles permitidos son: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
+      });
     }
+    const conexionRoleName = azureUserRoles[0].role_name;
 
     // Determinar el rol para el JWT
     const role = user.is_super_admin ? 'admin' : 'user';
