@@ -318,6 +318,16 @@ export const azureExchangeCode = async (req, res) => {
                    (response.idTokenClaims && response.idTokenClaims.email) ||
                    (response.idTokenClaims && response.idTokenClaims.preferred_username);
 
+    console.log('[Azure] Datos recibidos del token:', {
+      username: azureUser.username,
+      name: azureUser.name,
+      homeAccountId: azureUser.homeAccountId,
+      email_claim: response.idTokenClaims?.email,
+      preferred_username: response.idTokenClaims?.preferred_username,
+      upn: response.idTokenClaims?.upn,
+      email_resuelto: email
+    });
+
     if (!email) {
       console.error('No se pudo obtener el email del usuario de Azure AD:', {
         account: azureUser,
@@ -336,7 +346,19 @@ export const azureExchangeCode = async (req, res) => {
       [email, email, email]
     );
 
+    console.log(`[Azure] Búsqueda por email "${email}" → ${users?.length ?? 0} resultado(s)`);
+
     if (!users || users.length === 0) {
+      // Intentar búsqueda parcial para diagnóstico (solo en logs)
+      try {
+        const emailLocal = email.split('@')[0];
+        const [hint] = await pool.query(
+          `SELECT id, user_name, alternate_user_name, personal_email FROM user WHERE user_name LIKE ? OR alternate_user_name LIKE ? LIMIT 3`,
+          [`%${emailLocal}%`, `%${emailLocal}%`]
+        );
+        console.warn(`[Azure] Usuario no encontrado. Email Azure: "${email}". Sugerencias BD (parte local "${emailLocal}"):`, hint);
+      } catch(e) { /* diagnóstico opcional */ }
+
       return res.status(404).json({ 
         error: 'Usuario no encontrado',
         email: email 
