@@ -1,0 +1,53 @@
+name: Backend - evaluaciones-autonoma
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: 344261432125
+  ECR_REPOSITORY: evaluaciones-autonoma-back-ecr
+  IMAGE_TAG: candidate
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: arn:aws:iam::344261432125:role/evaluaciones-autonoma-gha-role
+
+      - name: Create .env
+        run: |
+          echo "PORT=5000" >> .env
+          echo "NODE_ENV=production" >> .env
+          echo "MONGO_URI=${{ secrets.MONGO_URI }}" >> .env
+          echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> .env
+          echo "CORS_ORIGIN=https://evaluaciones.autonoma.mozartia.com" >> .env
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push
+        run: |
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Force ECS redeploy
+        run: |
+          aws ecs update-service \
+            --cluster evaluaciones-autonoma-cluster \
+            --service evaluaciones-autonoma-svc \
+            --force-new-deployment \
+            --region $AWS_REGION
