@@ -110,10 +110,11 @@ export const login = async (req, res) => {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
 
+    let conexionRoleName = null;
     if (!user.is_super_admin) {
       const placeholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
       const [userRoles] = await pool.query(
-        `SELECT ur.user_id FROM user_role ur
+        `SELECT ur.user_id, r.name AS role_name FROM user_role ur
          INNER JOIN role r ON ur.role_id = r.id
          WHERE ur.user_id = ? AND r.name IN (${placeholders})
          LIMIT 1`,
@@ -124,6 +125,9 @@ export const login = async (req, res) => {
           error: 'Acceso denegado: no tienes un rol autorizado. Roles permitidos: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
         });
       }
+      conexionRoleName = userRoles[0].role_name;
+    } else {
+      conexionRoleName = 'Administrador General';
     }
 
     // Determinar el rol basado en is_super_admin o usar un valor por defecto
@@ -135,7 +139,8 @@ export const login = async (req, res) => {
         id: user.id.toString(), 
         username: user.user_name,
         email: user.personal_email || user.user_name,
-        role: role
+        role: role,
+        conexion_role: conexionRoleName
       },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
@@ -148,7 +153,8 @@ export const login = async (req, res) => {
         username: user.user_name,
         email: user.personal_email || user.user_name,
         name: `${user.name} ${user.last_name}`,
-        role: role
+        role: role,
+        conexion_role: conexionRoleName
       }
     });
   } catch (error) {
@@ -340,6 +346,7 @@ export const azureExchangeCode = async (req, res) => {
     const user = users[0];
 
     // Super admin siempre tiene acceso; resto debe tener al menos uno de los roles permitidos
+    let conexionRoleName = null;
     if (!user.is_super_admin) {
       const placeholders = ROLES_CON_ACCESO_EVALUACIONES.map(() => '?').join(', ');
       const [userRoles] = await pool.query(
@@ -357,6 +364,9 @@ export const azureExchangeCode = async (req, res) => {
           error: 'Acceso denegado: no tienes un rol autorizado para el sistema de evaluaciones. Los roles permitidos son: Monitor de práctica, Coordinador prácticas Pasantías o Administrador General.'
         });
       }
+      conexionRoleName = userRoles[0].role_name;
+    } else {
+      conexionRoleName = 'Administrador General';
     }
 
     // Determinar el rol para el JWT
@@ -368,7 +378,8 @@ export const azureExchangeCode = async (req, res) => {
         id: user.id.toString(), 
         username: user.user_name,
         email: user.personal_email || user.user_name,
-        role: role
+        role: role,
+        conexion_role: conexionRoleName
       },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
@@ -382,7 +393,8 @@ export const azureExchangeCode = async (req, res) => {
         username: user.user_name,
         email: user.personal_email || user.user_name,
         name: `${user.name} ${user.last_name}`,
-        role: role
+        role: role,
+        conexion_role: conexionRoleName
       }
     });
   } catch (error) {

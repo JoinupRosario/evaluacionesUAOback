@@ -1902,6 +1902,9 @@ export const getEvaluations = async (req, res) => {
     const surveyTypeFilter = req.query.type_survey || null;
     const searchTerm = req.query.search || null;
 
+    const userId = req.user?.userId ? parseInt(req.user.userId, 10) : null;
+    const conexionRole = req.user?.conexion_role || null;
+
     // Construir condiciones WHERE
     const whereConditions = [];
     const queryParams = [];
@@ -1922,6 +1925,27 @@ export const getEvaluations = async (req, res) => {
       queryParams.push(searchPattern);
     }
 
+    // Filtro por rol CONEXIÓN: Monitor solo ve evaluaciones donde es Monitor/Director; Coordinador/Admin solo por programas asignados
+    if (userId && conexionRole) {
+      if (conexionRole === 'Monitor de práctica') {
+        // Solo evaluaciones que tienen legalizaciones donde este usuario es el teacher (Monitor/Director de Trabajo de Grado)
+        whereConditions.push(`e.evaluation_id IN (
+          SELECT pe.evaluation_id FROM practice_evaluation pe
+          INNER JOIN academic_practice_legalized apl ON pe.academic_practice_legalized_id = apl.academic_practice_legalized_id
+          WHERE apl.teacher = ?
+        )`);
+        queryParams.push(userId);
+      } else if (conexionRole === 'Coordinador prácticas Pasantías' || conexionRole === 'Administrador General') {
+        // Solo evaluaciones cuyos programas están asignados al usuario en user_program
+        whereConditions.push(`e.evaluation_id IN (
+          SELECT ep.evaluation_id FROM evaluation_program ep
+          INNER JOIN user_program up ON ep.program_id = up.program_id
+          WHERE up.user_id = ?
+        )`);
+        queryParams.push(userId);
+      }
+    }
+
     const whereClause = whereConditions.length > 0 
       ? `WHERE ${whereConditions.join(' AND ')}`
       : '';
@@ -1933,7 +1957,6 @@ export const getEvaluations = async (req, res) => {
     const totalPages = Math.ceil(total / limit);
 
     // Leer evaluaciones desde MySQL (tabla evaluations) con paginación y filtros
-    // COMENTADO: faculty_id, date_sent, total_monitors y percentage_monitors no existen en esta BD según uao.sql
     const query = `
       SELECT 
         e.evaluation_id as id,
