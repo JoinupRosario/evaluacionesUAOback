@@ -22,6 +22,37 @@ const allowedOrigins = [
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
+// Log de cada request (para CloudWatch / debugging)
+app.use((req, res, next) => {
+  const start = Date.now();
+  const { method, path, url } = req;
+  const origin = req.headers.origin || '-';
+  console.log(`[REQ] ${method} ${path} | origin: ${origin}`);
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[RES] ${method} ${path} | ${res.statusCode} | ${duration}ms`);
+  });
+  next();
+});
+
+// Responder OPTIONS (preflight) lo antes posible para evitar 504 en ALB/proxy
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    const origin = req.headers.origin;
+    const allowed = origin && allowedOrigins.includes(origin);
+    console.log(`[CORS] OPTIONS ${req.path} | origin: ${origin || '-'} | allowed: ${allowed}`);
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(cors({
   origin: (origin, callback) => {
     // Permitir requests sin origin (ej. Postman, servidor a servidor)
@@ -29,6 +60,7 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
+    console.warn(`[CORS] Origen no permitido: ${origin}`);
     return callback(null, false);
   },
   credentials: true,
@@ -102,6 +134,21 @@ app.get('/api/health/connections', async (req, res) => {
   }
   
   res.json(status);
+});
+
+// Manejador de errores (log y respuesta genérica)
+app.use((err, req, res, next) => {
+  console.error('[ERROR]', err.message);
+  console.error('[ERROR] Stack:', err.stack);
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Ruta no encontrada
+app.use((req, res) => {
+  console.warn(`[404] ${req.method} ${req.path}`);
+  res.status(404).json({ error: 'Ruta no encontrada' });
 });
 
 export default app;
