@@ -650,17 +650,18 @@ const calculateEvaluationTotals = async (evaluation_id, evaluationData) => {
     // Por ahora, no se cuentan monitores ya que no hay columnas para ellos
     const total_monitors = 0; // Valor por defecto ya que no hay columnas de monitores en esta BD
 
-    // Obtener correos de estudiantes con sus IDs de legalización y nombre completo (desde user)
-    // postulant_apl -> postulant.postulant_id -> user.id
-    // Intentar primero user.personal_email, si no está usar postulant.alternate_email
+    // Obtener correos de estudiantes con legalización, nombre, identificación y programa
     const [studentsEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
         COALESCE(NULLIF(u.personal_email, ''), p.alternate_email) as email,
-        TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name
+        TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name,
+        u.identification,
+        pr.name as program_name
       FROM academic_practice_legalized apl
       INNER JOIN postulant p ON apl.postulant_apl = p.postulant_id
       INNER JOIN user u ON p.postulant_id = u.id
+      LEFT JOIN program pr ON apl.program_apl = pr.id
       WHERE ${whereClause}
         AND (
           (u.personal_email IS NOT NULL AND u.personal_email != '')
@@ -668,7 +669,7 @@ const calculateEvaluationTotals = async (evaluation_id, evaluationData) => {
         )
     `, queryParams);
 
-    // Obtener correos de jefes con sus IDs de legalización y nombre completo (desde practice_boss)
+    // Obtener correos de jefes con legalización y nombre (practice_boss en uao.sql no tiene identificación)
     const [bossesEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
@@ -707,14 +708,13 @@ const calculateEvaluationTotals = async (evaluation_id, evaluationData) => {
         evaluationMongo.total_bosses = total_bosses;
         evaluationMongo.total_monitors = total_monitors;
         
-        // Guardar correos de estudiantes (con nombre desde SQL)
+        // Guardar solo legalization_id, email y full_name (identificación y programa se muestran al consultar, enriqueciendo desde MySQL)
         evaluationMongo.student_emails = studentsEmails.map(row => ({
           legalization_id: row.legalization_id,
           email: row.email,
           full_name: row.full_name || ''
         }));
         
-        // Guardar correos de jefes (con nombre desde SQL)
         evaluationMongo.boss_emails = bossesEmails.map(row => ({
           legalization_id: row.legalization_id,
           email: row.email,
@@ -2749,15 +2749,18 @@ const getActorsFromLegacyEvaluation = async (req, res, evaluationId) => {
 
     const whereClause = whereConditions.join(' AND ');
 
-    // Obtener correos de estudiantes con sus IDs de legalización y nombre
+    // Obtener correos de estudiantes con legalización, nombre, identificación y programa
     const [studentsEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
         COALESCE(NULLIF(u.personal_email, ''), p.alternate_email) as email,
-        TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name
+        TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name,
+        u.identification,
+        pr.name as program_name
       FROM academic_practice_legalized apl
       INNER JOIN postulant p ON apl.postulant_apl = p.postulant_id
       INNER JOIN user u ON p.postulant_id = u.id
+      LEFT JOIN program pr ON apl.program_apl = pr.id
       WHERE ${whereClause}
         AND (
           (u.personal_email IS NOT NULL AND u.personal_email != '')
@@ -2765,7 +2768,7 @@ const getActorsFromLegacyEvaluation = async (req, res, evaluationId) => {
         )
     `, queryParams);
 
-    // Obtener correos de jefes con sus IDs de legalización y nombre
+    // Obtener correos de jefes con legalización y nombre
     const [bossesEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
@@ -2803,11 +2806,13 @@ const getActorsFromLegacyEvaluation = async (req, res, evaluationId) => {
       createdAt: evaluation.date_creation,
       updatedAt: evaluation.date_creation,
       is_legacy: true, // Indicador de que es del sistema anterior
-      // Correos con sus legalization_id y nombre (sin links ya que no se generaron)
+      // Correos con legalization_id, nombre, identificación y programa (sin links)
       student_emails: studentsEmails.map(item => ({
         legalization_id: item.legalization_id,
         email: item.email,
         full_name: item.full_name || '',
+        identification: item.identification || '',
+        program_name: item.program_name || '',
         link: null,
         usado: false
       })),
@@ -2882,22 +2887,29 @@ export const getEvaluationMongoDetails = async (req, res) => {
       }
     });
 
-    // Enriquecer full_name desde MySQL si no está guardado en MongoDB (datos antiguos)
+    // Enriquecer full_name, identification y program_name desde MySQL si no están en MongoDB (datos antiguos)
     const studentNamesMap = new Map();
+    const studentExtraMap = new Map(); // legalization_id -> { identification, program_name }
     const bossNamesMap = new Map();
-    const studentIds = (evaluationMongo.student_emails || []).filter(item => !(item.full_name && item.full_name.trim())).map(item => item.legalization_id);
+    const studentIds = (evaluationMongo.student_emails || []).map(item => item.legalization_id);
     const bossIds = (evaluationMongo.boss_emails || []).filter(item => !(item.full_name && item.full_name.trim())).map(item => item.legalization_id);
     if (studentIds.length > 0) {
       const placeholders = studentIds.map(() => '?').join(',');
-      const [studentNamesRows] = await pool.query(`
+      const [studentRows] = await pool.query(`
         SELECT apl.academic_practice_legalized_id as legalization_id,
-          TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name
+          TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name,
+          u.identification,
+          pr.name as program_name
         FROM academic_practice_legalized apl
         INNER JOIN postulant p ON apl.postulant_apl = p.postulant_id
         INNER JOIN user u ON p.postulant_id = u.id
+        LEFT JOIN program pr ON apl.program_apl = pr.id
         WHERE apl.academic_practice_legalized_id IN (${placeholders})
       `, studentIds);
-      studentNamesRows.forEach(row => studentNamesMap.set(row.legalization_id, row.full_name || ''));
+      studentRows.forEach(row => {
+        studentNamesMap.set(row.legalization_id, row.full_name || '');
+        studentExtraMap.set(row.legalization_id, { identification: row.identification || '', program_name: row.program_name || '' });
+      });
     }
     if (bossIds.length > 0) {
       const placeholders = bossIds.map(() => '?').join(',');
@@ -2911,12 +2923,15 @@ export const getEvaluationMongoDetails = async (req, res) => {
       bossNamesRows.forEach(row => bossNamesMap.set(row.legalization_id, row.full_name || ''));
     }
 
-    // Enriquecer correos con sus links, estado should_send y full_name
+    // Enriquecer correos con links, should_send, full_name; identification y program_name siempre desde MySQL (no se guardan en Mongo)
     const studentEmailsWithLinks = (evaluationMongo.student_emails || []).map(item => {
       const plain = item.toObject ? item.toObject() : { ...item };
+      const extra = studentExtraMap.get(item.legalization_id);
       return {
         ...plain,
         full_name: (plain.full_name && plain.full_name.trim()) ? plain.full_name : (studentNamesMap.get(item.legalization_id) || ''),
+        identification: extra?.identification ?? '',
+        program_name: extra?.program_name ?? '',
         link: studentLinksMap.get(item.legalization_id)?.link || null,
         token: studentLinksMap.get(item.legalization_id)?.token || null,
         usado: studentLinksMap.get(item.legalization_id)?.usado || false,

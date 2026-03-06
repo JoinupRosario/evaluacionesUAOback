@@ -17,6 +17,7 @@ const app = express();
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
+  'http://localhost:5174',
   'https://evaluaciones-uao-front.vercel.app',
   'https://evaluaciones-uao-front.vercel.app/',
   process.env.FRONTEND_URL
