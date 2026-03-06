@@ -29,6 +29,13 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /home/ubuntu/backend
+
+            echo "Instalando dependencias..."
             npm install --production
+
+            echo "Reiniciando backend..."
             pm2 restart backend-evaluaciones-uao || pm2 start src/server.js --name backend-evaluaciones-uao
+
             pm2 save
+
+            echo "Deploy finalizado correctamente"
