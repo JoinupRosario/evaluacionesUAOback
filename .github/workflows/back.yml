@@ -2,7 +2,7 @@ name: Backend - Evaluaciones uao
 
 on:
   push:
-    branches: ["master"]
+    branches: ["master"] 
 
 jobs:
   deploy:
@@ -38,4 +38,5 @@ jobs:
 
             pm2 save
 
+            echo "Deploy finalizado correctamente"
             echo "Deploy finalizado correctamente"
