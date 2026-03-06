@@ -160,7 +160,8 @@ const evaluationSchema = new mongoose.Schema({
     email: {
       type: String,
       required: true
-    }
+    },
+    full_name: { type: String, default: '' }
   }],
   boss_emails: [{
     legalization_id: {
@@ -170,7 +171,8 @@ const evaluationSchema = new mongoose.Schema({
     email: {
       type: String,
       required: true
-    }
+    },
+    full_name: { type: String, default: '' }
   }],
   monitor_emails: [{
     legalization_id: {

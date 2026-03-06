@@ -650,13 +650,14 @@ const calculateEvaluationTotals = async (evaluation_id, evaluationData) => {
     // Por ahora, no se cuentan monitores ya que no hay columnas para ellos
     const total_monitors = 0; // Valor por defecto ya que no hay columnas de monitores en esta BD
 
-    // Obtener correos de estudiantes con sus IDs de legalización
+    // Obtener correos de estudiantes con sus IDs de legalización y nombre completo (desde user)
     // postulant_apl -> postulant.postulant_id -> user.id
     // Intentar primero user.personal_email, si no está usar postulant.alternate_email
     const [studentsEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
-        COALESCE(NULLIF(u.personal_email, ''), p.alternate_email) as email
+        COALESCE(NULLIF(u.personal_email, ''), p.alternate_email) as email,
+        TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name
       FROM academic_practice_legalized apl
       INNER JOIN postulant p ON apl.postulant_apl = p.postulant_id
       INNER JOIN user u ON p.postulant_id = u.id
@@ -667,11 +668,12 @@ const calculateEvaluationTotals = async (evaluation_id, evaluationData) => {
         )
     `, queryParams);
 
-    // Obtener correos de jefes con sus IDs de legalización
+    // Obtener correos de jefes con sus IDs de legalización y nombre completo (desde practice_boss)
     const [bossesEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
-        pb.email
+        pb.email,
+        TRIM(CONCAT(IFNULL(pb.first_name, ''), ' ', IFNULL(pb.last_name, ''))) as full_name
       FROM academic_practice_legalized apl
       INNER JOIN practice_boss pb ON apl.boss_apl = pb.boss_id
       WHERE ${whereClause}
@@ -705,16 +707,18 @@ const calculateEvaluationTotals = async (evaluation_id, evaluationData) => {
         evaluationMongo.total_bosses = total_bosses;
         evaluationMongo.total_monitors = total_monitors;
         
-        // Guardar correos de estudiantes
+        // Guardar correos de estudiantes (con nombre desde SQL)
         evaluationMongo.student_emails = studentsEmails.map(row => ({
           legalization_id: row.legalization_id,
-          email: row.email
+          email: row.email,
+          full_name: row.full_name || ''
         }));
         
-        // Guardar correos de jefes
+        // Guardar correos de jefes (con nombre desde SQL)
         evaluationMongo.boss_emails = bossesEmails.map(row => ({
           legalization_id: row.legalization_id,
-          email: row.email
+          email: row.email,
+          full_name: row.full_name || ''
         }));
         
         // Guardar correos de monitores
@@ -1925,14 +1929,21 @@ export const getEvaluations = async (req, res) => {
       queryParams.push(searchPattern);
     }
 
-    // Filtro por rol CONEXIÓN: Monitor solo ve evaluaciones donde es Monitor/Director; Coordinador/Admin solo por programas asignados
+    // Filtro por rol CONEXIÓN: Monitor solo ve evaluaciones donde es teacher en alguna legalización; Coordinador por programas asignados
+    // userId = req.user.userId (user.id de MySQL). Para Monitor de práctica debe coincidir con apl.teacher en academic_practice_legalized.
+    // Relación: evaluations + evaluation_program (evaluation_id, program_id) + academic_practice_legalized (program_apl, academic_period_apl, practice_type, teacher).
     if (userId && conexionRole) {
       if (conexionRole === 'Monitor de práctica') {
-        // Solo evaluaciones que tienen legalizaciones donde este usuario es el teacher (Monitor/Director de Trabajo de Grado)
-        whereConditions.push(`e.evaluation_id IN (
-          SELECT pe.evaluation_id FROM practice_evaluation pe
-          INNER JOIN academic_practice_legalized apl ON pe.academic_practice_legalized_id = apl.academic_practice_legalized_id
-          WHERE apl.teacher = ?
+        // Evaluaciones donde existe al menos una legalización con este usuario como teacher (monitor), misma lógica que test_query_monitor_practica.sql
+        whereConditions.push(`EXISTS (
+          SELECT 1
+          FROM evaluation_program ep
+          INNER JOIN academic_practice_legalized apl ON apl.program_apl = ep.program_id
+          WHERE ep.evaluation_id = e.evaluation_id
+            AND e.period = apl.academic_period_apl
+            AND (e.practice_type IS NULL OR e.practice_type = apl.practice_type)
+            AND apl.teacher = ?
+            AND apl.status_apl NOT IN ('CTP_CANCEL', 'CANCELLED', 'DELETED', 'CTP_REJECTED')
         )`);
         queryParams.push(userId);
       } else if (conexionRole === 'Coordinador Prácticas Pasantías') {
@@ -2738,11 +2749,12 @@ const getActorsFromLegacyEvaluation = async (req, res, evaluationId) => {
 
     const whereClause = whereConditions.join(' AND ');
 
-    // Obtener correos de estudiantes con sus IDs de legalización
+    // Obtener correos de estudiantes con sus IDs de legalización y nombre
     const [studentsEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
-        COALESCE(NULLIF(u.personal_email, ''), p.alternate_email) as email
+        COALESCE(NULLIF(u.personal_email, ''), p.alternate_email) as email,
+        TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name
       FROM academic_practice_legalized apl
       INNER JOIN postulant p ON apl.postulant_apl = p.postulant_id
       INNER JOIN user u ON p.postulant_id = u.id
@@ -2753,11 +2765,12 @@ const getActorsFromLegacyEvaluation = async (req, res, evaluationId) => {
         )
     `, queryParams);
 
-    // Obtener correos de jefes con sus IDs de legalización
+    // Obtener correos de jefes con sus IDs de legalización y nombre
     const [bossesEmails] = await pool.query(`
       SELECT 
         apl.academic_practice_legalized_id as legalization_id,
-        pb.email
+        pb.email,
+        TRIM(CONCAT(IFNULL(pb.first_name, ''), ' ', IFNULL(pb.last_name, ''))) as full_name
       FROM academic_practice_legalized apl
       INNER JOIN practice_boss pb ON apl.boss_apl = pb.boss_id
       WHERE ${whereClause}
@@ -2790,16 +2803,18 @@ const getActorsFromLegacyEvaluation = async (req, res, evaluationId) => {
       createdAt: evaluation.date_creation,
       updatedAt: evaluation.date_creation,
       is_legacy: true, // Indicador de que es del sistema anterior
-      // Correos con sus legalization_id (sin links ya que no se generaron)
+      // Correos con sus legalization_id y nombre (sin links ya que no se generaron)
       student_emails: studentsEmails.map(item => ({
         legalization_id: item.legalization_id,
         email: item.email,
+        full_name: item.full_name || '',
         link: null,
         usado: false
       })),
       boss_emails: bossesEmails.map(item => ({
         legalization_id: item.legalization_id,
         email: item.email,
+        full_name: item.full_name || '',
         link: null,
         usado: false
       })),
@@ -2867,26 +2882,63 @@ export const getEvaluationMongoDetails = async (req, res) => {
       }
     });
 
-    // Enriquecer correos con sus links y estado should_send
-    const studentEmailsWithLinks = (evaluationMongo.student_emails || []).map(item => ({
-      ...item.toObject ? item.toObject() : item,
-      link: studentLinksMap.get(item.legalization_id)?.link || null,
-      token: studentLinksMap.get(item.legalization_id)?.token || null,
-      usado: studentLinksMap.get(item.legalization_id)?.usado || false,
-      fecha_uso: studentLinksMap.get(item.legalization_id)?.fecha_uso || null,
-      expira_en: studentLinksMap.get(item.legalization_id)?.expira_en || null,
-      should_send: studentLinksMap.get(item.legalization_id)?.should_send !== undefined ? studentLinksMap.get(item.legalization_id).should_send : true
-    }));
+    // Enriquecer full_name desde MySQL si no está guardado en MongoDB (datos antiguos)
+    const studentNamesMap = new Map();
+    const bossNamesMap = new Map();
+    const studentIds = (evaluationMongo.student_emails || []).filter(item => !(item.full_name && item.full_name.trim())).map(item => item.legalization_id);
+    const bossIds = (evaluationMongo.boss_emails || []).filter(item => !(item.full_name && item.full_name.trim())).map(item => item.legalization_id);
+    if (studentIds.length > 0) {
+      const placeholders = studentIds.map(() => '?').join(',');
+      const [studentNamesRows] = await pool.query(`
+        SELECT apl.academic_practice_legalized_id as legalization_id,
+          TRIM(CONCAT(IFNULL(u.name, ''), ' ', IFNULL(u.last_name, ''))) as full_name
+        FROM academic_practice_legalized apl
+        INNER JOIN postulant p ON apl.postulant_apl = p.postulant_id
+        INNER JOIN user u ON p.postulant_id = u.id
+        WHERE apl.academic_practice_legalized_id IN (${placeholders})
+      `, studentIds);
+      studentNamesRows.forEach(row => studentNamesMap.set(row.legalization_id, row.full_name || ''));
+    }
+    if (bossIds.length > 0) {
+      const placeholders = bossIds.map(() => '?').join(',');
+      const [bossNamesRows] = await pool.query(`
+        SELECT apl.academic_practice_legalized_id as legalization_id,
+          TRIM(CONCAT(IFNULL(pb.first_name, ''), ' ', IFNULL(pb.last_name, ''))) as full_name
+        FROM academic_practice_legalized apl
+        INNER JOIN practice_boss pb ON apl.boss_apl = pb.boss_id
+        WHERE apl.academic_practice_legalized_id IN (${placeholders})
+      `, bossIds);
+      bossNamesRows.forEach(row => bossNamesMap.set(row.legalization_id, row.full_name || ''));
+    }
 
-    const bossEmailsWithLinks = (evaluationMongo.boss_emails || []).map(item => ({
-      ...item.toObject ? item.toObject() : item,
-      link: bossLinksMap.get(item.legalization_id)?.link || null,
-      token: bossLinksMap.get(item.legalization_id)?.token || null,
-      usado: bossLinksMap.get(item.legalization_id)?.usado || false,
-      fecha_uso: bossLinksMap.get(item.legalization_id)?.fecha_uso || null,
-      expira_en: bossLinksMap.get(item.legalization_id)?.expira_en || null,
-      should_send: bossLinksMap.get(item.legalization_id)?.should_send !== undefined ? bossLinksMap.get(item.legalization_id).should_send : true
-    }));
+    // Enriquecer correos con sus links, estado should_send y full_name
+    const studentEmailsWithLinks = (evaluationMongo.student_emails || []).map(item => {
+      const plain = item.toObject ? item.toObject() : { ...item };
+      return {
+        ...plain,
+        full_name: (plain.full_name && plain.full_name.trim()) ? plain.full_name : (studentNamesMap.get(item.legalization_id) || ''),
+        link: studentLinksMap.get(item.legalization_id)?.link || null,
+        token: studentLinksMap.get(item.legalization_id)?.token || null,
+        usado: studentLinksMap.get(item.legalization_id)?.usado || false,
+        fecha_uso: studentLinksMap.get(item.legalization_id)?.fecha_uso || null,
+        expira_en: studentLinksMap.get(item.legalization_id)?.expira_en || null,
+        should_send: studentLinksMap.get(item.legalization_id)?.should_send !== undefined ? studentLinksMap.get(item.legalization_id).should_send : true
+      };
+    });
+
+    const bossEmailsWithLinks = (evaluationMongo.boss_emails || []).map(item => {
+      const plain = item.toObject ? item.toObject() : { ...item };
+      return {
+        ...plain,
+        full_name: (plain.full_name && plain.full_name.trim()) ? plain.full_name : (bossNamesMap.get(item.legalization_id) || ''),
+        link: bossLinksMap.get(item.legalization_id)?.link || null,
+        token: bossLinksMap.get(item.legalization_id)?.token || null,
+        usado: bossLinksMap.get(item.legalization_id)?.usado || false,
+        fecha_uso: bossLinksMap.get(item.legalization_id)?.fecha_uso || null,
+        expira_en: bossLinksMap.get(item.legalization_id)?.expira_en || null,
+        should_send: bossLinksMap.get(item.legalization_id)?.should_send !== undefined ? bossLinksMap.get(item.legalization_id).should_send : true
+      };
+    });
 
     const monitorEmailsWithLinks = (evaluationMongo.monitor_emails || []).map(item => ({
       ...item.toObject ? item.toObject() : item,

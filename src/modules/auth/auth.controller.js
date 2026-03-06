@@ -78,17 +78,17 @@ export const login = async (req, res) => {
       return res.status(400).json({ error: 'Email/Usuario y contraseña son requeridos' });
     }
 
-    // Buscar usuario en MySQL por user_name o alternate_user_name
-    // COMENTADO: it_has_encryption_in_SHA256 ya no se consulta - Ahora se usa MD5
+    // Buscar usuario en MySQL por user_name, alternate_user_name o personal_email
+    // (en muchos entornos el correo/login viene en user_name, no en personal_email)
     const [users] = await pool.query(
       `SELECT id, name, last_name, user_name, alternate_user_name, password_hash, 
               personal_email, status, is_super_admin
        FROM user 
-       WHERE (user_name = ? OR alternate_user_name = ?) 
+       WHERE (user_name = ? OR alternate_user_name = ? OR personal_email = ?) 
          AND status = 'ACTIVE'
          AND password_hash IS NOT NULL
        LIMIT 1`,
-      [email, email]
+      [email, email, email]
     );
 
     if (!users || users.length === 0) {
