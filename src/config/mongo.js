@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const connectMongo = async () => {
+const connectMongo = async () => { 
   try {
     if (!process.env.MONGO_URI) {
       console.log('⚠️  MONGO_URI no configurado en .env');
