@@ -32,7 +32,9 @@ jobs:
             npm install --production
 
             echo "Reiniciando backend..."
-            pm2 delete backend-evaluaciones-uao || pm2 start src/server.js --name backend-evaluaciones-uao
+            pm2 delete backend-evaluaciones-uao
+            
+            pm2 start src/server.js --name backend-evaluaciones-uao
 
             pm2 save
 
