@@ -19,7 +19,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           source: "."
-          target: "/home/ubuntu/backend"
+          target: "/home/ubuntu/evaluacionesUAOBack"
 
       - name: Ejecutar comandos en EC2
         uses: appleboy/ssh-action@v1.0.0
@@ -30,5 +30,10 @@ jobs:
           script: |
             cd /home/ubuntu/backend
             npm install --production
+
+            echo "Reiniciando backend..."
             pm2 restart backend-evaluaciones-uao || pm2 start src/server.js --name backend-evaluaciones-uao
+
             pm2 save
+
+            echo "Deploy finalizado correctamente"
