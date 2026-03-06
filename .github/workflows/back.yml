@@ -39,4 +39,3 @@ jobs:
             pm2 save
 
             echo "Deploy finalizado correctamente"
-            echo "Deploy finalizado correctamente"
