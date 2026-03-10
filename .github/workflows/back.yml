@@ -28,7 +28,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd /home/ubuntu/evaluacionesUAOback
+           cd /home/ubuntu/evaluacionesUAOBack
             npm install --production
 
             echo "Reiniciando backend..."
