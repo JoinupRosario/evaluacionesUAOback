@@ -2,7 +2,7 @@ name: Backend - Evaluaciones uao
 
 on:
   push:
-    branches: ["master"] 
+    branches: ["master"]  
 
 jobs:
   deploy:
