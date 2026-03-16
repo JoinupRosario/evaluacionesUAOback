@@ -2,6 +2,24 @@ import pool from '../../config/mysql.js';
 
 export const getPeriodos = async (req, res) => {
   try {
+    // Solo períodos cuyo nombre contiene la letra P (ej: 2025-2SP, 2026-1SP)
+    const [rows] = await pool.query(`
+      SELECT id, period, status 
+      FROM academic_period 
+      WHERE status = 'ACTIVE' 
+        AND (period LIKE '%p%' OR period LIKE '%P%')
+      ORDER BY period DESC
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al obtener periodos:', error);
+    res.status(500).json({ error: 'Error al obtener periodos' });
+  }
+};
+
+/** Todos los períodos activos (sin filtrar por P). Usado en Reportes. */
+export const getPeriodosTodos = async (req, res) => {
+  try {
     const [rows] = await pool.query(`
       SELECT id, period, status 
       FROM academic_period 

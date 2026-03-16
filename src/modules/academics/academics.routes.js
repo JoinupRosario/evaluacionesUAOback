@@ -1,9 +1,10 @@
 import express from 'express';
-import { getPeriodos, getFacultades, getProgramas, getTiposPractica, getTiposEncuesta, getTiposEncuestaMonitoring, getCategoriasMonitoring } from './academics.controller.js';
+import { getPeriodos, getPeriodosTodos, getFacultades, getProgramas, getTiposPractica, getTiposEncuesta, getTiposEncuestaMonitoring, getCategoriasMonitoring } from './academics.controller.js';
 
 const router = express.Router();
 
 router.get('/periodos', getPeriodos);
+router.get('/periodos-todos', getPeriodosTodos);
 router.get('/facultades', getFacultades);
 router.get('/programas', getProgramas);
 router.get('/tipos-practica', getTiposPractica);

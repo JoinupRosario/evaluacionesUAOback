@@ -8,6 +8,7 @@ import syncRoutes from './modules/sync/sync.routes.js';
 import evaluationsRoutes from './modules/evaluations/evaluations.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import surveysRoutes from './modules/surveys/surveys.routes.js';
+import reportsRoutes from './modules/reports/reports.routes.js';
 
 dotenv.config();
 
@@ -93,6 +94,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/evaluations', evaluationsRoutes);
 app.use('/api/surveys', surveysRoutes);
+app.use('/api/reports', reportsRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'Servidor funcionando' });

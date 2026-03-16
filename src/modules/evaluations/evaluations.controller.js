@@ -2985,12 +2985,24 @@ export const getEvaluationMongoDetails = async (req, res) => {
       should_send: coordinatorLinksMap.get(item.legalization_id)?.should_send !== undefined ? coordinatorLinksMap.get(item.legalization_id).should_send : true
     }));
 
+    // Obtener nombre del período desde MySQL (academic_period.period es el value/nombre)
+    let period_name = null;
+    if (evaluationMongo.period) {
+      try {
+        const [periods] = await pool.query('SELECT period FROM academic_period WHERE id = ?', [evaluationMongo.period]);
+        if (periods.length > 0) period_name = periods[0].period;
+      } catch (err) {
+        console.warn('Error al obtener nombre del período:', err);
+      }
+    }
+
     // Convertir a objeto plano y formatear fechas
     const evaluationData = {
       _id: evaluationMongo._id.toString(),
       evaluation_id_mysql: evaluationMongo.evaluation_id_mysql,
       name: evaluationMongo.name,
       period: evaluationMongo.period,
+      period_name: period_name,
       practice_type: evaluationMongo.practice_type,
       // COMENTADO: faculty_id eliminado - ya no se usa
       type_survey: evaluationMongo.type_survey,
