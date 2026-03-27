@@ -2634,9 +2634,15 @@ export const getEvaluationResponse = async (req, res) => {
       }
     }
 
-    // Combinar preguntas con respuestas
-    const enrichedAnswers = answers.map(answer => {
-      const question = questions.find(q => q._id.toString() === answer.pregunta_id);
+    const questionsSorted = [...questions].sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    // Combinar preguntas con respuestas (por _id; si el survey se editó y cambiaron los _id, por orden guardado)
+    const enrichedAnswers = answers.map((answer, index) => {
+      const pid = answer.pregunta_id != null ? String(answer.pregunta_id) : '';
+      let question = questions.find(q => q._id.toString() === pid);
+      if (!question && questionsSorted.length > index) {
+        question = questionsSorted[index];
+      }
       return {
         pregunta_id: answer.pregunta_id,
         respuesta: answer.respuesta,
@@ -4348,6 +4354,65 @@ export const exportEvaluationReport = async (req, res) => {
 
     console.log(`📊 Registros encontrados: ${practiceEvaluations.length}\n`);
 
+    // Mapas de preguntas del Survey activo (y orden por `order`) — si cambian _id al editar la encuesta, el Excel usa texto por posición
+    const studentQuestionsMap = new Map();
+    const bossQuestionsMap = new Map();
+    const monitorQuestionsMap = new Map();
+    let studentQuestionsOrdered = [];
+    let bossQuestionsOrdered = [];
+    let monitorQuestionsOrdered = [];
+
+    if (mongoose.connection.readyState === 1) {
+      const evaluationMongo = await Evaluation.findOne({ evaluation_id_mysql: EVALUATION_ID });
+      if (evaluationMongo) {
+        const orSurvey = [];
+        if (evaluationMongo.med_enc_id_student != null) {
+          orSurvey.push({ 'student_form.item_code': evaluationMongo.med_enc_id_student });
+        }
+        if (evaluationMongo.med_enc_id_boss != null) {
+          orSurvey.push({ 'tutor_form.item_code': evaluationMongo.med_enc_id_boss });
+        }
+        if (evaluationMongo.med_enc_id_monitor != null) {
+          orSurvey.push({ 'monitor_form.item_code': evaluationMongo.med_enc_id_monitor });
+        }
+        if (evaluationMongo.med_enc_id_teacher != null) {
+          orSurvey.push({ 'tutor_form.item_code': evaluationMongo.med_enc_id_teacher });
+        }
+        if (evaluationMongo.med_enc_id_coord != null) {
+          orSurvey.push({ 'monitor_form.item_code': evaluationMongo.med_enc_id_coord });
+        }
+        if (orSurvey.length > 0) {
+          const survey = await Survey.findOne({ $or: orSurvey, status: 'ACTIVE' });
+          if (survey) {
+            if (survey.student_form?.questions?.length) {
+              survey.student_form.questions.forEach(q => {
+                studentQuestionsMap.set(q._id.toString(), q.question);
+              });
+              studentQuestionsOrdered = [...survey.student_form.questions]
+                .sort((a, b) => (a.order || 0) - (b.order || 0))
+                .map(q => q.question);
+            }
+            if (survey.tutor_form?.questions?.length) {
+              survey.tutor_form.questions.forEach(q => {
+                bossQuestionsMap.set(q._id.toString(), q.question);
+              });
+              bossQuestionsOrdered = [...survey.tutor_form.questions]
+                .sort((a, b) => (a.order || 0) - (b.order || 0))
+                .map(q => q.question);
+            }
+            if (survey.monitor_form?.questions?.length) {
+              survey.monitor_form.questions.forEach(q => {
+                monitorQuestionsMap.set(q._id.toString(), q.question);
+              });
+              monitorQuestionsOrdered = [...survey.monitor_form.questions]
+                .sort((a, b) => (a.order || 0) - (b.order || 0))
+                .map(q => q.question);
+            }
+          }
+        }
+      }
+    }
+
     // 3. Crear el workbook de Excel
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Sistema de Evaluaciones';
@@ -4459,17 +4524,33 @@ export const exportEvaluationReport = async (req, res) => {
       { header: 'Respuesta', key: 'answer', width: 50 }
     ];
 
-    // Función para parsear JSON y extraer preguntas/respuestas
-    function parseEvaluationData(jsonData, actorType) {
-      if (!jsonData || jsonData.trim() === '') return [];
+    // Función para parsear JSON y extraer preguntas/respuestas (texto embebido, o Survey por _id, o por orden si los _id cambiaron)
+    function parseEvaluationData(jsonData, actorType, questionsMap, questionsOrderedTexts = []) {
+      if (!jsonData || (typeof jsonData === 'string' && jsonData.trim() === '')) return [];
       
       try {
-        const data = JSON.parse(jsonData);
+        const data = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
         if (!Array.isArray(data) || data.length === 0) return [];
         
         return data.map((item, index) => {
+          const preguntaId = item.pregunta_id || item.question_id || item.medPreId || item.id;
+          let preguntaIdStr = null;
+          if (preguntaId != null) {
+            preguntaIdStr = typeof preguntaId === 'object' && preguntaId.toString
+              ? preguntaId.toString()
+              : String(preguntaId);
+          }
           const questionId = item.medPreId || item.id || item.question_id || item.pregunta_id || (index + 1);
           let question = item.medPrePregunta || item.pregunta || item.question || item.texto || '';
+
+          if (!question && questionsMap && preguntaIdStr && questionsMap.has(preguntaIdStr)) {
+            question = questionsMap.get(preguntaIdStr);
+          } else if (!question && questionsOrderedTexts.length > index && questionsOrderedTexts[index]) {
+            question = questionsOrderedTexts[index];
+          }
+          if (!question) {
+            question = `Pregunta ${index + 1}`;
+          }
           
           const closedAnswer = item.medResRespuesta || item.respuesta || item.answer || item.valor || '';
           const openAnswer = item.medEncResAbierta || item.respuesta_abierta || item.texto_libre || '';
@@ -4518,7 +4599,7 @@ export const exportEvaluationReport = async (req, res) => {
 
       // Procesar JEFES
       if (record.med_boss_status || record.boss_name) {
-        const bossAnswers = record.med_boss_data ? parseEvaluationData(record.med_boss_data, 'boss') : [];
+        const bossAnswers = record.med_boss_data ? parseEvaluationData(record.med_boss_data, 'boss', bossQuestionsMap, bossQuestionsOrdered) : [];
         
         if (bossAnswers.length > 0) {
           bossAnswers.forEach((answer, index) => {
@@ -4569,7 +4650,7 @@ export const exportEvaluationReport = async (req, res) => {
 
       // Procesar ESTUDIANTES
       if (record.med_student_status || record.student_name) {
-        const studentAnswers = record.med_student_data ? parseEvaluationData(record.med_student_data, 'student') : [];
+        const studentAnswers = record.med_student_data ? parseEvaluationData(record.med_student_data, 'student', studentQuestionsMap, studentQuestionsOrdered) : [];
         
         if (studentAnswers.length > 0) {
           studentAnswers.forEach((answer, index) => {
@@ -4618,7 +4699,7 @@ export const exportEvaluationReport = async (req, res) => {
 
       // Procesar MONITORES
       if (record.med_monitor_status || record.monitor1_name) {
-        const monitorAnswers = record.med_monitor_data ? parseEvaluationData(record.med_monitor_data, 'monitor') : [];
+        const monitorAnswers = record.med_monitor_data ? parseEvaluationData(record.med_monitor_data, 'monitor', monitorQuestionsMap, monitorQuestionsOrdered) : [];
         
         if (monitorAnswers.length > 0) {
           monitorAnswers.forEach((answer, index) => {
@@ -5024,6 +5105,10 @@ export const exportAnswersReport = async (req, res) => {
     const studentQuestionsMap = new Map();
     const bossQuestionsMap = new Map();
     
+    /** Textos de preguntas en orden (order) — si cambian los _id al editar el survey, el export sigue mostrando el texto por posición */
+    let studentQuestionsOrdered = [];
+    let bossQuestionsOrdered = [];
+
     if (evaluationMongo.med_enc_id_student || evaluationMongo.med_enc_id_boss) {
       const survey = await Survey.findOne({
         $or: [
@@ -5039,6 +5124,9 @@ export const exportAnswersReport = async (req, res) => {
           survey.student_form.questions.forEach(q => {
             studentQuestionsMap.set(q._id.toString(), q.question);
           });
+          studentQuestionsOrdered = [...survey.student_form.questions]
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .map(q => q.question);
         }
         
         // Mapa de preguntas para jefes (usando tutor_form)
@@ -5046,6 +5134,9 @@ export const exportAnswersReport = async (req, res) => {
           survey.tutor_form.questions.forEach(q => {
             bossQuestionsMap.set(q._id.toString(), q.question);
           });
+          bossQuestionsOrdered = [...survey.tutor_form.questions]
+            .sort((a, b) => (a.order || 0) - (b.order || 0))
+            .map(q => q.question);
         }
       }
     }
@@ -5072,8 +5163,8 @@ export const exportAnswersReport = async (req, res) => {
       ORDER BY u_student.last_name, u_student.name
     `, legalization_ids);
 
-    // Función para parsear JSON de respuestas usando el mapa de preguntas
-    function parseEvaluationData(jsonData, questionsMap) {
+    // Función para parsear JSON de respuestas: por ID y, si el survey se editó y cambiaron _id, por orden (índice en array guardado ≈ orden de preguntas)
+    function parseEvaluationData(jsonData, questionsMap, questionsOrderedTexts = []) {
       if (!jsonData || (typeof jsonData === 'string' && jsonData.trim() === '')) return [];
       try {
         const data = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
@@ -5092,18 +5183,12 @@ export const exportAnswersReport = async (req, res) => {
             }
           }
           
-          // Obtener el texto de la pregunta desde el mapa, o usar valores alternativos
+          // Obtener el texto de la pregunta desde el mapa, o por índice si los IDs ya no existen (survey actualizado)
           let questionText = '';
           if (preguntaIdStr && questionsMap && questionsMap.has(preguntaIdStr)) {
             questionText = questionsMap.get(preguntaIdStr);
-          } else if (preguntaIdStr && questionsMap) {
-            // Intentar buscar sin los últimos caracteres (por si hay diferencias en el formato)
-            for (const [key, value] of questionsMap.entries()) {
-              if (key.includes(preguntaIdStr.substring(0, 8)) || preguntaIdStr.includes(key.substring(0, 8))) {
-                questionText = value;
-                break;
-              }
-            }
+          } else if (questionsOrderedTexts.length > index && questionsOrderedTexts[index]) {
+            questionText = questionsOrderedTexts[index];
           }
           
           // Si aún no tenemos el texto, usar fallback
@@ -5177,7 +5262,7 @@ export const exportAnswersReport = async (req, res) => {
       const mongoData = answersMap.get(record.legalization_id) || {};
       
       // Procesar respuestas de estudiante
-      const studentAnswers = parseEvaluationData(mongoData.med_student_data, studentQuestionsMap);
+      const studentAnswers = parseEvaluationData(mongoData.med_student_data, studentQuestionsMap, studentQuestionsOrdered);
       if (studentAnswers.length > 0) {
         studentAnswers.forEach((answer, index) => {
           studentSheet.addRow({
@@ -5211,7 +5296,7 @@ export const exportAnswersReport = async (req, res) => {
       }
 
       // Procesar respuestas de jefe
-      const bossAnswers = parseEvaluationData(mongoData.med_boss_data, bossQuestionsMap);
+      const bossAnswers = parseEvaluationData(mongoData.med_boss_data, bossQuestionsMap, bossQuestionsOrdered);
       if (bossAnswers.length > 0) {
         bossAnswers.forEach((answer, index) => {
           bossSheet.addRow({
