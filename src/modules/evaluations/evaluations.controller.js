@@ -2851,6 +2851,77 @@ export const getEvaluationMongoDetails = async (req, res) => {
       return await getActorsFromLegacyEvaluation(req, res, parseInt(id));
     }
 
+    // Sincronizar email actual de jefes desde SQL al abrir detalles.
+    // Si cambió el jefe en la legalización, se actualiza:
+    // 1) evaluationMongo.boss_emails (para que la tabla muestre el correo actual)
+    // 2) EvaluationAccessToken.actor_type='boss' (para que links/envíos usen correo actual)
+    const bossItems = (evaluationMongo.boss_emails || []).map(item => item.toObject ? item.toObject() : item);
+    if (bossItems.length > 0) {
+      const bossLegalizationIds = bossItems.map(item => item.legalization_id).filter(Boolean);
+      if (bossLegalizationIds.length > 0) {
+        const placeholders = bossLegalizationIds.map(() => '?').join(',');
+        const [bossSqlRows] = await pool.query(`
+          SELECT
+            apl.academic_practice_legalized_id as legalization_id,
+            pb.email,
+            TRIM(CONCAT(IFNULL(pb.first_name, ''), ' ', IFNULL(pb.last_name, ''))) as full_name
+          FROM academic_practice_legalized apl
+          INNER JOIN practice_boss pb ON apl.boss_apl = pb.boss_id
+          WHERE apl.academic_practice_legalized_id IN (${placeholders})
+            AND pb.email IS NOT NULL
+            AND pb.email != ''
+        `, bossLegalizationIds);
+
+        const bossSqlDataMap = new Map();
+        bossSqlRows.forEach(row => {
+          bossSqlDataMap.set(row.legalization_id, {
+            email: row.email,
+            full_name: row.full_name || ''
+          });
+        });
+
+        let hasBossEmailChanges = false;
+        const syncedBossEmails = bossItems.map(item => {
+          const currentBossData = bossSqlDataMap.get(item.legalization_id);
+          if (!currentBossData) return item;
+          const shouldUpdateEmail = currentBossData.email && currentBossData.email !== item.email;
+          const shouldUpdateName = currentBossData.full_name && currentBossData.full_name !== item.full_name;
+          if (shouldUpdateEmail || shouldUpdateName) {
+            hasBossEmailChanges = true;
+            return {
+              ...item,
+              email: shouldUpdateEmail ? currentBossData.email : item.email,
+              full_name: shouldUpdateName ? currentBossData.full_name : item.full_name
+            };
+          }
+          return item;
+        });
+
+        if (hasBossEmailChanges) {
+          evaluationMongo.boss_emails = syncedBossEmails;
+          await evaluationMongo.save();
+        }
+
+        const tokenUpdateOps = [];
+        bossSqlDataMap.forEach((bossData, legalizationId) => {
+          tokenUpdateOps.push({
+            updateMany: {
+              filter: {
+                evaluation_id: evaluationMongo._id,
+                actor_type: 'boss',
+                legalization_id: legalizationId,
+                email: { $ne: bossData.email }
+              },
+              update: { $set: { email: bossData.email } }
+            }
+          });
+        });
+        if (tokenUpdateOps.length > 0) {
+          await EvaluationAccessToken.bulkWrite(tokenUpdateOps);
+        }
+      }
+    }
+
     // Obtener tokens de acceso generados
     const accessTokens = await EvaluationAccessToken.find({ 
       evaluation_id: evaluationMongo._id 
