@@ -34,6 +34,7 @@ SELECT
     u_postulant.last_name                              AS apellido_estudiante,
     u_postulant.identification                        AS identificacion,
     pp.student_code                                    AS codigo,
+    COALESCE(NULLIF(u_postulant.personal_email, ''), p.alternate_email) AS correo_estudiante,
     prog_apl.name                                      AS programa_legalizacion,
     fac.name                                           AS facultad_programa,
     apd.period                                         AS periodo_legalizacion,
@@ -79,7 +80,7 @@ ORDER BY prog_apl.name, apd.period, u_postulant.last_name
     workbook.creator = 'Sistema de Evaluaciones';
     const sheet = workbook.addWorksheet('Legalizaciones');
     const headerKeys = rows.length > 0 ? Object.keys(rows[0]) : [
-      'nombre_estudiante', 'apellido_estudiante', 'identificacion', 'codigo',
+      'nombre_estudiante', 'apellido_estudiante', 'identificacion', 'codigo', 'correo_estudiante',
       'programa_legalizacion', 'facultad_programa', 'periodo_legalizacion', 'tipo_trabajo_grado',
       'curso_posgrado_empresa', 'fecha_inicio', 'fecha_finalizacion', 'estado_legalizacion',
       'fecha_creacion_legalizacion', 'fecha_aprobacion_legalizacion', 'nota_cualitativa', 'nota_cuantitativa',
