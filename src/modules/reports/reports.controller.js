@@ -10,6 +10,8 @@ import ExcelJS from 'exceljs';
  */
 export const getLegalizacionesDetallado = async (req, res) => {
   try {
+    req.setTimeout(180000);
+    res.setTimeout(180000);
     if (req.user?.conexion_role !== 'Administrador General') {
       return res.status(403).json({ error: 'Solo Administrador General puede descargar este reporte' });
     }
@@ -36,7 +38,9 @@ export const getLegalizacionesDetallado = async (req, res) => {
     const placeholders = periodIds.map(() => '?').join(',');
 
     const [rows] = await pool.query(
-      `
+      {
+        timeout: 120000,
+        sql: `
 SELECT
     u_postulant.name                                   AS nombre_estudiante,
     u_postulant.last_name                              AS apellido_estudiante,
@@ -80,7 +84,8 @@ LEFT JOIN \`user\` u_jury_2 ON apl.jury_2 = u_jury_2.id
 LEFT JOIN \`user\` u_jury_3 ON apl.jury_3 = u_jury_3.id
 WHERE apl.academic_period_apl IN (${placeholders})
 ORDER BY prog_apl.name, apd.period, u_postulant.last_name
-    `,
+        `
+      },
       periodIds
     );
 
@@ -100,12 +105,20 @@ ORDER BY prog_apl.name, apd.period, u_postulant.last_name
     sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
     sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
 
+    // Generar el archivo completo en memoria y enviarlo de una vez.
+    // Evita Transfer-Encoding: chunked, que el proxy corta (ERR_INCOMPLETE_CHUNKED_ENCODING).
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     const filename = `detallado_legalizaciones_${new Date().toISOString().split('T')[0]}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    await workbook.xlsx.write(res);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.end(buffer);
   } catch (error) {
     console.error('Error en reporte legalizaciones detallado:', error);
+    if (res.headersSent) {
+      return res.end();
+    }
     res.status(500).json({ error: 'Error al generar el reporte', details: error.message });
   }
 };
