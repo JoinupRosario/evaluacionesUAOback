@@ -13,14 +13,22 @@ export const getLegalizacionesDetallado = async (req, res) => {
     if (req.user?.conexion_role !== 'Administrador General') {
       return res.status(403).json({ error: 'Solo Administrador General puede descargar este reporte' });
     }
-    let periodIds = req.query.periodIds || req.body?.periodIds;
-    if (Array.isArray(periodIds)) {
-      periodIds = periodIds.filter((id) => id != null && id !== '').map((id) => parseInt(id, 10));
-    } else if (typeof periodIds === 'string') {
-      periodIds = periodIds.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
+    const rawPeriodIds = req.body?.periodIds ?? req.query.periodIds;
+    let periodIds = [];
+    if (Array.isArray(rawPeriodIds)) {
+      periodIds = rawPeriodIds;
+    } else if (typeof rawPeriodIds === 'string') {
+      periodIds = rawPeriodIds.split(',');
+    } else if (rawPeriodIds && typeof rawPeriodIds === 'object') {
+      // Express/qs convierte ?periodIds=1&periodIds=2... en objeto si hay más de 20
+      periodIds = Object.values(rawPeriodIds).flat();
     } else {
       return res.status(400).json({ error: 'Se requiere periodIds (array o string separado por comas)' });
     }
+    periodIds = periodIds
+      .filter((id) => id != null && id !== '')
+      .map((id) => parseInt(id, 10))
+      .filter((n) => !Number.isNaN(n));
     if (periodIds.length === 0) {
       return res.status(400).json({ error: 'Seleccione al menos un período' });
     }
